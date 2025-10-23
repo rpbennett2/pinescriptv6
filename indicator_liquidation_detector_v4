@@ -35,15 +35,7 @@ use_dynamic_lookback = input.bool(true, "Use Dynamic Lookback", group="CVD Setti
 
 
 
-// Enhanced VIX Analysis Configuration  
-groupVixEnhanced = "Enhanced VIX Analysis"
-useEnhancedVix = input.bool(true, "Enable Enhanced VIX Analysis", group=groupVixEnhanced)
-vix9dSymbol = input.string("CBOE:VIX9D!", "VIX9D Symbol", group=groupVixEnhanced)
-vixFrontMonth = input.string("CBOE:VX1!", "VIX Front Month", group=groupVixEnhanced)
-vixSecondMonth = input.string("CBOE:VX2!", "VIX Second Month", group=groupVixEnhanced)
-vixThirdMonth = input.string("CBOE:VXF2026", "VIX Third Month", group=groupVixEnhanced)
-curveAnalysisEnabled = input.bool(true, "Enable Curve Shape Analysis", group=groupVixEnhanced)
-volSurfaceWeight = input.float(0.15, "Volatility Surface Weight", minval=0.0, maxval=0.5, step=0.01, group=groupVixEnhanced)
+// Note: Enhanced VIX Analysis is now integrated into PCA Breadth system
 
 
 // === Timeframe Settings ===
@@ -127,16 +119,33 @@ useHTF        = input.bool(true, "Use Higher Timeframe Context", group="Multi-Ti
 htfMultiplier = input.int(5, "HTF Multiplier", minval=2, maxval=10, group="Multi-Timeframe")
 showHTFTrend  = input.bool(true, "Show HTF Trend Info", group="Multi-Timeframe")
 
-// === Volatility Term Structure (VIX/VX1) ===
-groupTS           = "Volatility Term Structure"
-useVixFilter      = input.bool(true,  "Use VIX/VX1 Filter", group=groupTS)
-vixSymbol         = input.string("CFE:VX1!", "VIX Symbol", group=groupTS)
-vx1Symbol         = input.string("CFE:VX2!", "VX1 Front-Month Symbol", group=groupTS)
-vixTF             = input.string("60", "VIX/VX1 Timeframe", options=["60","D"], group=groupTS)
-tsLen             = input.int(30,     "TS Smoothing Length", minval=5, group=groupTS)
-backwardationThr  = input.float(-0.02,"Backwardation Thr ( (VX1-VIX)/VIX )", step=0.005, group=groupTS)
-contangoThr       = input.float(0.05, "Contango Thr ( (VX1-VIX)/VIX )",     step=0.005, group=groupTS)
-tsWeight          = input.float(0.12, "MinScore Weight (+/- max %)", minval=0.0, maxval=0.3, step=0.01, group=groupTS)
+// === PCA Breadth Composite Integration ===
+groupPCA = "PCA Breadth Analysis"
+enablePCA = input.bool(true, "Enable PCA Breadth", group=groupPCA)
+pcaWindow = input.int(96, "PCA Window", minval=20, maxval=500, group=groupPCA)
+pcaFastLen = input.int(9, "PCA Fast EMA", minval=3, maxval=50, group=groupPCA)
+pcaSlowLen = input.int(21, "PCA Slow EMA", minval=10, maxval=100, group=groupPCA)
+pcaProjSmooth = input.int(5, "Projection Smoothing", minval=1, maxval=20, group=groupPCA)
+pcaBandK = input.float(0.25, "Band Threshold (k·σ)", minval=0.1, maxval=1.0, step=0.01, group=groupPCA)
+pcaSpreadK = input.float(0.18, "Min Spread (k·σ)", minval=0.05, maxval=0.5, step=0.01, group=groupPCA)
+pcaWeight = input.float(0.30, "PCA Signal Weight", minval=0.0, maxval=1.0, step=0.05, group=groupPCA)
+
+// PCA Symbols
+symTick = input.symbol("USI:TICK", "TICK Symbol", group=groupPCA)
+symAdd = input.symbol("USI:ADD", "ADD Symbol", group=groupPCA)
+symVold = input.symbol("USI:VOLD", "VOLD Symbol", group=groupPCA)
+symVX1 = input.symbol("CBOE:VX1!", "VX1 Symbol", group=groupPCA)
+symVX2 = input.symbol("CBOE:VX2!", "VX2 Symbol", group=groupPCA)
+symVX3 = input.symbol("CBOE:VXZ2025", "VX3 Symbol", group=groupPCA)
+symVIX9D = input.symbol("CBOE:VIX9D", "VIX9D Symbol", group=groupPCA)
+
+// PCA Timeframes
+pcaDataTF = input.string("5", "Internals TF", options=["1","5","15"], group=groupPCA)
+pcaVxTF = input.string("5", "VX TF", options=["2","5","10"], group=groupPCA)
+
+// VIX Term Structure weights
+w_m2m1 = input.float(1.50, "Weight: M2/M1", step=0.1, group=groupPCA)
+w_short = input.float(0.50, "Weight: VX1/VIX9D", step=0.1, group=groupPCA)
 
 
 // Determine HTF & TF helpers
@@ -160,6 +169,7 @@ showCVD           = input.bool(false, "Show CVD Line", group="Display Settings")
 showCVDDivergence = input.bool(true,  "Show CVD Divergences", group="Display Settings")
 showTable         = input.bool(true,  "Show Info Table", group="Display Settings")
 showDivStrength   = input.bool(true,  "Show Divergence Strength", group="Display Settings")
+showPCAMarkers    = input.bool(true,  "Show PCA Signal Markers", group="Display Settings")
 
 // === Apply presets to additional parameters ===
 atrMultiplierActual = isScalping ? 0.5 : isIntraday ? 0.6 : isSwing ? 0.8 : atrMultiplier
@@ -272,85 +282,130 @@ else
     adaptive_momentum_threshold := momentumThreshold
 
 // ========================================================================
-// ENHANCED VIX VOLATILITY SURFACE ANALYSIS
+// PCA BREADTH COMPOSITE CALCULATION
 // ========================================================================
 
-// Multi-Point VIX Term Structure Analysis
-get_enhanced_vix_data() =>
-    if useEnhancedVix
-        // Get multiple VIX points for curve analysis
-        [vix_spot, vix9d, vx1, vx2, vx3] = request.security(vixSymbol, vixTF,[close,request.security(vix9dSymbol, vixTF, close, ignore_invalid_symbol=true),request.security(vixFrontMonth, vixTF, close, ignore_invalid_symbol=true),request.security(vixSecondMonth, vixTF, close, ignore_invalid_symbol=true),request.security(vixThirdMonth, vixTF, close, ignore_invalid_symbol=true)],            ignore_invalid_symbol=true, lookahead=barmerge.lookahead_off)
-        [vix_spot, vix9d, vx1, vx2, vx3]
+// Helper functions for PCA
+f_clamp(x, lo, hi) => x < lo ? lo : x > hi ? hi : x
+
+f_robust_z(src, n) =>
+    m = ta.median(src, n)
+    mad = ta.median(math.abs(src - m), n)
+    z = (mad == 0) ? 0 : (src - m) / (mad * 1.4826)
+    f_clamp(z, -6.0, 6.0)
+
+f_z_ratio(num, den, n) =>
+    v = (den != 0) ? (num/den - 1.0) : na
+    v := f_clamp(nz(v), -0.35, 0.35)
+    f_robust_z(v, n)
+
+calculate_pca_projection() =>
+    if not enablePCA
+        [0.0, 0.0, 0.0, 0, "Unknown", 1.0]
     else
-        [na, na, na, na, na]
+        // Fetch market internals and VIX data
+        tck = request.security(symTick, pcaDataTF, close, lookahead=barmerge.lookahead_off)
+        add = request.security(symAdd, pcaDataTF, close, lookahead=barmerge.lookahead_off)
+        vold = request.security(symVold, pcaDataTF, close, lookahead=barmerge.lookahead_off)
+        vx1 = request.security(symVX1, pcaVxTF, close, lookahead=barmerge.lookahead_off)
+        vx2 = request.security(symVX2, pcaVxTF, close, lookahead=barmerge.lookahead_off)
+        vx3 = request.security(symVX3, pcaVxTF, close, lookahead=barmerge.lookahead_off)
+        v9d = request.security(symVIX9D, pcaVxTF, close, lookahead=barmerge.lookahead_off)
 
-[vix_spot, vix9d, vx1, vx2, vx3] = get_enhanced_vix_data()
+        // Create standardized features
+        z1 = f_robust_z(tck, pcaWindow)
+        z2 = f_robust_z(add, pcaWindow)
+        z3 = f_robust_z(vold, pcaWindow)
+        z4 = f_z_ratio(vx2, vx1, pcaWindow)
+        z5 = f_z_ratio(vx3, vx1, pcaWindow)
+        z6 = f_z_ratio(vx1, v9d, pcaWindow)
 
-// Advanced VIX Curve Analysis
-analyze_vix_curve() =>
-    if not na(vix_spot) and not na(vx1) and not na(vx2) and not na(vx3)
-        // Multiple curve slopes
-        front_slope = (vx1 - vix_spot) / vix_spot          // 0-30 day slope
-        second_slope = (vx2 - vx1) / vx1                   // 30-60 day slope  
-        third_slope = (vx3 - vx2) / vx2                    // 60-90 day slope
-        
-        // Curve shape analysis
-        curvature = second_slope - front_slope             // Curve bend
-        curve_acceleration = third_slope - second_slope    // Rate of change in curve
-        
-        // VIX9D vs VIX spread (short-term stress)
-        short_term_stress = not na(vix9d) ? (vix9d - vix_spot) / vix_spot : 0.0
-        
-        // Volatility term structure regimes
-        ts_regime = switch
-            front_slope < -0.05 and curvature < -0.02 => -2    // Deep backwardation  
-            front_slope < -0.02 => -1                          // Backwardation
-            front_slope > 0.08 and curvature > 0.02 => 2       // Steep contango
-            front_slope > 0.02 => 1                            // Contango
-            => 0                                                // Flat
-        
-        // Volatility surface stress indicators
-        term_structure_stress = math.abs(front_slope) + math.abs(curvature) * 0.5
-        short_term_premium = short_term_stress > 0.02 ? 1 : short_term_stress < -0.02 ? -1 : 0
-        
-        // Risk regime classification
-        risk_regime = switch
-            ts_regime <= -1 and short_term_premium >= 0 => "Crisis"
-            ts_regime <= -1 => "Stress" 
-            ts_regime >= 1 and term_structure_stress < 0.03 => "Complacent"
-            ts_regime >= 1 => "Elevated"
-            => "Normal"
-        
-        [ts_regime, front_slope, curvature, short_term_stress, risk_regime, term_structure_stress]
-    else
-        [0, 0.0, 0.0, 0.0, "Unknown", 0.0]
+        // Apply weights to term structure features
+        z4w = w_m2m1 * z4
+        z6w = w_short * z6
 
-[vix_ts_regime, vix_front_slope, vix_curvature, vix_short_stress, vix_risk_regime, vix_term_stress] = analyze_vix_curve()
+        arr = array.from(z1, z2, z3, z4w, z5, z6w)
 
-// Enhanced VIX-based market regime adjustment
-get_vix_regime_adjustment() =>
-    base_adjustment = 1.0
-    
-    if useEnhancedVix and vix_risk_regime != "Unknown"
-        regime_adjustment = switch vix_risk_regime
-            "Crisis" => 0.6      // Much easier signals in crisis
-            "Stress" => 0.8      // Easier signals in stress
-            "Normal" => 1.0      // Standard thresholds
-            "Elevated" => 1.2    // Slightly harder signals
-            "Complacent" => 1.4  // Much harder signals when complacent
+        // Compute correlation matrix and PCA
+        corr = matrix.new<float>(6, 6, 0.0)
+        for i = 0 to 5
+            for j = 0 to 5
+                cij = ta.correlation(array.get(arr, i), array.get(arr, j), pcaWindow)
+                matrix.set(corr, i, j, nz(cij))
+
+        eigVal = corr.eigenvalues()
+        eigVec = corr.eigenvectors()
+
+        // Sign consistency for PC1
+        var array<float> pc_prev = array.new<float>(6, 0.0)
+        var bool pc_init = false
+
+        f_dot(a, b) =>
+            a.get(0)*b.get(0) + a.get(1)*b.get(1) + a.get(2)*b.get(2) +
+            a.get(3)*b.get(3) + a.get(4)*b.get(4) + a.get(5)*b.get(5)
+
+        pc_now = eigVec.col(0)
+        same_dir = not pc_init or (f_dot(pc_now, pc_prev) >= 0)
+
+        f_mult(arrF, k) =>
+            r = array.new<float>(array.size(arrF))
+            for i = 0 to array.size(arrF) - 1
+                array.set(r, i, arrF.get(i) * k)
+            r
+
+        pc_aligned = same_dir ? pc_now : f_mult(pc_now, -1.0)
+
+        for i = 0 to 5
+            array.set(pc_prev, i, pc_aligned.get(i))
+        pc_init := true
+
+        // Calculate projection
+        proj_raw = array.get(arr, 0) * pc_aligned.get(0) +
+                   array.get(arr, 1) * pc_aligned.get(1) +
+                   array.get(arr, 2) * pc_aligned.get(2) +
+                   array.get(arr, 3) * pc_aligned.get(3) +
+                   array.get(arr, 4) * pc_aligned.get(4) +
+                   array.get(arr, 5) * pc_aligned.get(5)
+
+        // Normalize by eigenvalue
+        ev1 = math.max(eigVal.get(0), 1e-9)
+        proj_n = f_clamp(proj_raw / math.sqrt(ev1), -6.0, 6.0)
+
+        // Smooth projection
+        proj_s = ta.ema(proj_n, pcaProjSmooth)
+        fast_ema = ta.ema(proj_s, pcaFastLen)
+        slow_ema = ta.ema(proj_s, pcaSlowLen)
+
+        // VIX regime analysis
+        m2m1 = na(vx1) or na(vx2) ? na : (vx2 / vx1 - 1.0)
+        m3m1 = na(vx3) or na(vx1) ? na : (vx3 / vx1 - 1.0)
+
+        vix_regime = switch
+            m2m1 < -0.06 => -2    // Deep backwardation
+            m2m1 < -0.015 => -1   // Backwardation
+            m2m1 > 0.06 => 2      // Steep contango
+            m2m1 > 0.015 => 1     // Contango
+            => 0                   // Flat
+
+        risk_regime = switch vix_regime
+            -2 => "Crisis"
+            -1 => "Stress"
+            0 => "Normal"
+            1 => "Elevated"
+            2 => "Complacent"
+            => "Unknown"
+
+        regime_adjustment = switch vix_regime
+            -2 => 0.7
+            -1 => 0.85
+            0 => 1.0
+            1 => 1.15
+            2 => 1.25
             => 1.0
-        
-        // Additional adjustment for curve dynamics
-        curve_adjustment = switch
-            math.abs(vix_curvature) > 0.05 => 0.9   // High curvature = unstable
-            vix_term_stress > 0.1 => 0.85            // High term stress = opportunity
-            => 1.0
-        
-        regime_adjustment * curve_adjustment
-    else
-        base_adjustment
 
-vix_regime_multiplier = get_vix_regime_adjustment()
+        [proj_s, fast_ema, slow_ema, vix_regime, risk_regime, regime_adjustment]
+
+[pca_projection, pca_fast, pca_slow, vix_ts_regime, vix_risk_regime, vix_regime_multiplier] = calculate_pca_projection()
 
 // ========================================================================
 // ADAPTIVE PARAMETER APPLICATION
@@ -481,20 +536,38 @@ trendAlignmentShort = not useTrendFilter or is_uptrend   or (not strong_downtren
 
 
 
-// --- VIX/VX1 term structure (contango/backwardation) ---
-[vixClose, vx1Close] = request.security(vixSymbol, vixTF,[close, request.security(vx1Symbol, vixTF, close, ignore_invalid_symbol=true)],ignore_invalid_symbol=true, lookahead=barmerge.lookahead_off)
-tsOK     = useVixFilter and not na(vixClose) and not na(vx1Close) and vixClose > 0
+// === PCA Signal Generation ===
+// Generate liquidation signals based on PCA projection
+generate_pca_signals() =>
+    if not enablePCA
+        [false, false, 0.0, 0.0]
+    else
+        // Calculate thresholds
+        sigProj = 1.0  // Normalized projection has unit variance
+        effBand = math.max(0.12 * sigProj, pcaBandK * sigProj * vix_regime_multiplier)
+        min_spread = pcaSpreadK * sigProj * vix_regime_multiplier
+        band_extra = 0.15 * sigProj
 
-// spread > 0 => contango (calmer/trendier); spread < 0 => backwardation (stressy/mean-reverting)
-tsSpread   = tsOK ? (vx1Close - vixClose) / vixClose : 0.0
-tsSpreadMA = tsOK ? ta.sma(tsSpread, tsLen) : 0.0
-tsZ        = tsOK ? (tsSpread - tsSpreadMA) / ta.stdev(tsSpread, tsLen) : 0.0
+        // Signal conditions
+        farAbove = pca_projection > (effBand + band_extra)
+        farBelow = pca_projection < -(effBand + band_extra)
+        spreadUp = (pca_fast - pca_slow) > min_spread
+        spreadDn = (pca_slow - pca_fast) > min_spread
 
-// Discrete regime for robust gating
-tsRegime = tsOK ? (tsSpread < backwardationThr ? -1 : tsSpread > contangoThr ? 1 : 0) : 0
-// Multiplier for your min score (±tsWeight). Contango => harder to trigger reversals; Backwardation => easier.
-termAdjFactorRaw = 1.0 + (tsRegime * tsWeight)
-termAdjFactor    = tsOK ? math.min(1.0 + tsWeight, math.max(1.0 - tsWeight, termAdjFactorRaw)) : 1.0
+        // Generate signals
+        pca_long_signal = farAbove and spreadUp
+        pca_short_signal = farBelow and spreadDn
+
+        // Calculate signal strength
+        pca_strength = math.abs(pca_projection) / sigProj
+        regime_strength = vix_regime_multiplier < 1.0 ? 1.3 : 0.8
+
+        strength_long = pca_long_signal ? (pca_strength * 0.65 + regime_strength * 0.35) : 0.0
+        strength_short = pca_short_signal ? (pca_strength * 0.65 + regime_strength * 0.35) : 0.0
+
+        [pca_long_signal, pca_short_signal, strength_long, strength_short]
+
+[pca_long, pca_short, pca_strength_long, pca_strength_short] = generate_pca_signals()
 
 
 // --- Dynamic CVD lookback (bar-0 safe) ---
@@ -917,17 +990,24 @@ scalpSweepBonusShort = (sweepUp    and reclaimDown) ? 12 : 0
 scalpVWAPBonusLong   = (low  <= svwapLower2 or low  <= svwapLower) ? 8 : 0
 scalpVWAPBonusShort  = (high >= svwapUpper2 or high >= svwapUpper) ? 8 : 0
 
-// Enhanced scoring with all new components
-longScore  = longVolumeScore + longVWAPScore + longRSIScore + longCVDDivScore +  longCVDStrBonus + (longMomentumExhaustion?30:0) + (longCVDMomentumDiv?25:0) + (low<=lowerKeltner?10:0) + (low<=vwapLower2?10:0) + htfAlignmentLong + stopHuntLongBonus + regimeBonus + scalpSweepBonusLong + scalpVWAPBonusLong +pattern_score_long + (bull_structure_break?25:0) + (confluence_bull*30) +(exhaustion_pattern and low < ta.lowest(low[1], 10) ? 20 : 0)
+// === PCA Integration into Scoring ===
+// Calculate PCA bonus (scaled by weight and strength)
+pcaLongBonus = enablePCA and pca_long ? math.round(pca_strength_long * pcaWeight * 100) : 0
+pcaShortBonus = enablePCA and pca_short ? math.round(pca_strength_short * pcaWeight * 100) : 0
 
-shortScore = shortVolumeScore + shortVWAPScore + shortRSIScore + shortCVDDivScore + shortCVDStrBonus + (shortMomentumExhaustion?30:0) + (shortCVDMomentumDiv?25:0) + (high>=upperKeltner?10:0) + (high>=vwapUpper2?10:0) + htfAlignmentShort + stopHuntShortBonus + regimeBonus + scalpSweepBonusShort + scalpVWAPBonusShort +pattern_score_short + (bear_structure_break?25:0) + (confluence_bear*30) +(exhaustion_pattern and high > ta.highest(high[1], 10) ? 20 : 0)
+// Enhanced scoring with PCA integration
+longScore  = longVolumeScore + longVWAPScore + longRSIScore + longCVDDivScore +  longCVDStrBonus + (longMomentumExhaustion?30:0) + (longCVDMomentumDiv?25:0) + (low<=lowerKeltner?10:0) + (low<=vwapLower2?10:0) + htfAlignmentLong + stopHuntLongBonus + regimeBonus + scalpSweepBonusLong + scalpVWAPBonusLong +pattern_score_long + (bull_structure_break?25:0) + (confluence_bull*30) +(exhaustion_pattern and low < ta.lowest(low[1], 10) ? 20 : 0) + pcaLongBonus
+
+shortScore = shortVolumeScore + shortVWAPScore + shortRSIScore + shortCVDDivScore + shortCVDStrBonus + (shortMomentumExhaustion?30:0) + (shortCVDMomentumDiv?25:0) + (high>=upperKeltner?10:0) + (high>=vwapUpper2?10:0) + htfAlignmentShort + stopHuntShortBonus + regimeBonus + scalpSweepBonusShort + scalpVWAPBonusShort +pattern_score_short + (bear_structure_break?25:0) + (confluence_bear*30) +(exhaustion_pattern and high > ta.highest(high[1], 10) ? 20 : 0) + pcaShortBonus
 
 // Adjusted minimum score (lighter in Scalp)
 rawAdjMin = minConfirmScoreActual * regime_multiplier * todFactor
 adjustedMinScore = isScalpMode ? math.round(math.min(45, math.max(22, rawAdjMin - 8))) : math.round(rawAdjMin)
 
-// NEW: apply VIX/VX1 term-structure adjustment
-minScoreVIX = math.round(adjustedMinScore * termAdjFactor * final_min_score_multiplier)
+// Apply PCA regime adjustment (replaces old VIX term structure)
+enhanced_min_score_adjustment = vix_regime_multiplier * pcaWeight
+final_min_score_multiplier = 1.0 + (enhanced_min_score_adjustment - 1.0) * pcaWeight
+minScoreVIX = math.round(adjustedMinScore * final_min_score_multiplier)
 
 
 // Cooldown (opposite-side bypass stays)
@@ -971,6 +1051,8 @@ bgcolor(useCVDRoC and cvdRoC >  dynamic_cvd_roc_threshold and barstate.isconfirm
 bgcolor(useCVDRoC and cvdRoC < -dynamic_cvd_roc_threshold and barstate.isconfirmed ? color.new(color.green, 90) : na)
 plotshape(showCVDDivergence and bullish_div and bull_phase_confirmed and barstate.isconfirmed, title="CVD Bull Div", style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.normal)
 plotshape(showCVDDivergence and bearish_div and bear_phase_confirmed and barstate.isconfirmed, title="CVD Bear Div", style=shape.triangledown, location=location.abovebar,  color=color.red,   size=size.normal)
+plotshape(showPCAMarkers and enablePCA and pca_long and barstate.isconfirmed, title="PCA Long", style=shape.circle, location=location.belowbar, color=color.aqua, size=size.tiny, text="P")
+plotshape(showPCAMarkers and enablePCA and pca_short and barstate.isconfirmed, title="PCA Short", style=shape.circle, location=location.abovebar, color=color.orange, size=size.tiny, text="P")
 plotchar(highProbLong  and barstate.isconfirmed,  title="High Prob Long",  char="●", location=location.belowbar, color=color.green, size=size.normal)
 plotchar(highProbShort and barstate.isconfirmed,  title="High Prob Short", char="●", location=location.abovebar,  color=color.red,   size=size.normal)
 
@@ -1092,11 +1174,11 @@ if showTable
         table.cell(infoTable, 1, 18, regimeShort, text_color=color.yellow)
         table.cell(infoTable, 2, 18, str.tostring(regime_multiplier, "#.#") + "x", text_color=color.yellow)
         // VIX TS row
-        table.cell(infoTable, 0, 19, "VIX TS", text_color=color.gray)
-        tsText  = tsRegime == -1 ? "Backward." : tsRegime == 1 ? "Contango" : "Flat"
-        tsColor = tsRegime == -1 ? color.orange : tsRegime == 1 ? color.yellow : color.gray
-        table.cell(infoTable, 1, 19, tsText, text_color=tsColor)
-        table.cell(infoTable, 2, 19, str.tostring(tsSpread*100, "#.#") + "%", text_color=tsColor)
+        table.cell(infoTable, 0, 19, "PCA Breadth", text_color=color.gray)
+        pcaStatus = not enablePCA ? "OFF" : pca_long ? "LONG" : pca_short ? "SHORT" : "Neutral"
+        pcaColor = not enablePCA ? color.gray : pca_long ? color.green : pca_short ? color.red : color.gray
+        table.cell(infoTable, 1, 19, pcaStatus, text_color=pcaColor)
+        table.cell(infoTable, 2, 19, str.tostring(pca_projection, "#.##"), text_color=pcaColor)
         // Add dynamic threshold monitoring
         table.cell(infoTable, 0, 20, "Dyn Thresh", text_color=color.gray)
         table.cell(infoTable, 1, 20, str.tostring(current_threshold_multiplier, "#.##"))
