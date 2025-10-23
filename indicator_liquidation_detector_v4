@@ -380,12 +380,15 @@ calculate_pca_projection() =>
         m2m1 = na(vx1) or na(vx2) ? na : (vx2 / vx1 - 1.0)
         m3m1 = na(vx3) or na(vx1) ? na : (vx3 / vx1 - 1.0)
 
-        vix_regime = switch
-            m2m1 < -0.06 => -2    // Deep backwardation
-            m2m1 < -0.015 => -1   // Backwardation
-            m2m1 > 0.06 => 2      // Steep contango
-            m2m1 > 0.015 => 1     // Contango
-            => 0                   // Flat
+        vix_regime = if na(m2m1)
+            0  // Default to Normal if data unavailable
+        else
+            switch
+                m2m1 < -0.06 => -2    // Deep backwardation
+                m2m1 < -0.015 => -1   // Backwardation
+                m2m1 > 0.06 => 2      // Steep contango
+                m2m1 > 0.015 => 1     // Contango
+                => 0                   // Flat
 
         risk_regime = switch vix_regime
             -2 => "Crisis"
