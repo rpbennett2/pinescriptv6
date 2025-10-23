@@ -1,0 +1,1166 @@
+//@version=5
+indicator("Liquidation Cascade Detector", shorttitle = 'LCD-V3', overlay=true, dynamic_requests = true)
+//
+// === Preset Configurations ===
+presetConfig = input.string("Scalping (1-5m)", "Configuration Preset", options=["Custom", "Scalping (1-5m)", "Intraday (15-30m)", "Swing (60m+)"], group="Preset Config")
+//
+
+// === DYNAMIC THRESHOLD ADAPTATION SYSTEM ===
+// Replace static thresholds with adaptive ones based on market volatility and regime
+
+// Dynamic Threshold Configuration
+groupDynamic = "Dynamic Thresholds"
+useDynamicThresholds = input.bool(true, "Enable Dynamic Thresholds", group=groupDynamic)
+//baseThresholdMultiplier = input.float(0, "Base Threshold Multiplier", minval=0, maxval=3000, step=0.1, group=groupDynamic)
+volatilityLookback = input.int(60, "Volatility Lookback Period", minval=20, maxval=500, group=groupDynamic)
+regimeAdjustment = input.bool(true, "Enable Regime-Based Adjustment", group=groupDynamic)
+adaptationSpeed = input.float(0.1, "Adaptation Speed", minval=0.01, maxval=1.0, step=0.01, group=groupDynamic)
+
+// === Enhanced CVD Settings ===
+cvdLookback      = input.int(280, "CVD Lookback Period", minval=10, maxval=5000, step=10, group="CVD Settings")
+cvdSmoothing     = input.int(21,  "CVD Smoothing Period", minval=1, step=1, group="CVD Settings")
+cvdDivThreshold  = input.float(1.5, "CVD Divergence Threshold (ATR)", minval=0.5, step=0.25, group="CVD Settings")
+cvdSlopeMulti    = input.float(3, "CVD Slope Multiplier", minval=0.1, step=0.1, group="CVD Settings")
+useCVDConfirm    = input.bool(true, "Use CVD Confirmation", group="CVD Settings")
+normalizeCVD     = input.bool(true, "Normalize CVD by Volume", group="CVD Settings")
+use_ultra_data   = input.bool(true, "Use Ultra Data (Multi-Exchange)", group="CVD Settings")
+fractal_periods  = input.int(2, "CVD Fractal Periods", minval=1, maxval=5, group="CVD Settings")
+require_phase_change = input.bool(true, "Require Phase Change for Confirmation", group="CVD Settings")
+
+divergence_sensitivity = input.float(0.1, "Divergence Sensitivity", minval=0.1, maxval=2.0, step=0.1, group="CVD Settings")
+use_dynamic_lookback = input.bool(true, "Use Dynamic Lookback", group="CVD Settings")
+
+
+
+// Enhanced VIX Analysis Configuration  
+groupVixEnhanced = "Enhanced VIX Analysis"
+useEnhancedVix = input.bool(true, "Enable Enhanced VIX Analysis", group=groupVixEnhanced)
+vix9dSymbol = input.string("CBOE:VIX9D!", "VIX9D Symbol", group=groupVixEnhanced)
+vixFrontMonth = input.string("CBOE:VX1!", "VIX Front Month", group=groupVixEnhanced)
+vixSecondMonth = input.string("CBOE:VX2!", "VIX Second Month", group=groupVixEnhanced)
+vixThirdMonth = input.string("CBOE:VXF2026", "VIX Third Month", group=groupVixEnhanced)
+curveAnalysisEnabled = input.bool(true, "Enable Curve Shape Analysis", group=groupVixEnhanced)
+volSurfaceWeight = input.float(0.15, "Volatility Surface Weight", minval=0.0, maxval=0.5, step=0.01, group=groupVixEnhanced)
+
+
+// === Timeframe Settings ===
+timeframeOption = input.string("5", "Timeframe", options=["Current","1","2","3","5","15","30","60","120","240"], group="Timeframe")
+actualTimeframe = timeframeOption == "Current" ? timeframe.period : timeframeOption
+
+// === ATR Settings ===
+lookback       = input.int(240, "Lookback Period for ATR", minval=10, maxval=500, group="ATR Settings")
+atrMultiplier  = input.float(2,"ATR Multiplier for Large Candle", minval=0.1, step=0.1, group="ATR Settings")
+
+// === Volume Settings ===
+volumeLookback     = input.int(240, "Lookback Period for Volume", minval=10, maxval=1000, step=1, group="Volume Settings")
+volumeMultiplier   = input.float(5,"Volume Spike Threshold Multiplier", minval=0.5, step=0.1, group="Volume Settings")
+
+volumeExhaustMulti = input.float(0.8,"Volume Exhaustion Multiplier", minval=0.1, step=0.1, group="Volume Settings")
+market_type        = input.string("Commodities","Market Type", ["Forex","Crypto","Stock","Commodities"], group="Volume Settings")
+
+// === Trend Filter Settings ===
+useTrendFilter        = input.bool(true,"Use Trend Filter", group="Trend Filter")
+trendEMAFast          = input.int(21,"Fast EMA", minval=10, maxval=50, group="Trend Filter")
+trendEMASlow          = input.int(50,"Slow EMA", minval=20, maxval=200, group="Trend Filter")
+trendStrengthRequired = input.float(0.4,"Min Trend Strength %", minval=0, maxval=2, step=0.1, group="Trend Filter")
+
+// === VWAP Settings ===
+vwapDeviation = input.float(0.3, "VWAP Deviation Multiplier", minval=0.1, step=0.1, group="VWAP Settings")
+vwapLookback  = input.int(240, "VWAP Lookback", minval=20, step=10, group="VWAP Settings")
+useSecondVWAP = input.bool(true, "Use Second VWAP Band", group="VWAP Settings")
+vwapDeviation2 = input.float(2.0,"Second VWAP Deviation", minval=0.5, maxval=5.0, step=0.1, group="VWAP Settings")
+
+// === Pattern Detection Settings ===
+minConsecutive    = input.int(5, "Minimum Consecutive Candles", minval=1, maxval=5, group="Pattern Detection")
+momentumThreshold = input.float(6,"Momentum Threshold (ATR)", minval=0.1, step=0.25, group="Pattern Detection")
+
+rsiPeriod         = input.int(21,"RSI Period", minval=7, maxval=50, step=1, group="Pattern Detection")
+min_bars_between  = input.int(20, "Min Bars Between Divergences", minval=1, group="Pattern Detection")
+max_bars_between  = input.int(80,"Max Bars Between Divergences", minval=10, group="Pattern Detection")
+
+// === Confirmation Settings ===
+useVolumeConfirm = input.bool(true,  "Use Volume Confirmation", group="Confirmation Settings")
+useVWAP          = input.bool(true,  "Use VWAP Confirmation", group="Confirmation Settings")
+useRSI           = input.bool(false, "Use RSI Confirmation", group="Confirmation Settings")
+minConfirmScore  = input.int(40, "Minimum Confirmation Score (%)", minval=0, maxval=100, step=5, group="Confirmation Settings")
+
+// === Signal Management Settings ===
+requireSingleTrigger = input.bool(true, "Require Single Trigger Type", group="Signal Management")
+
+// === Session Settings ===
+useETH            = input.bool(true, "Use Electronic Trading Hours (ETH)", tooltip="ETH: 6PM-5PM ET, RTH: 9:30AM-4PM ET", group="Session Settings")
+resetCVD          = input.bool(true, "Reset CVD Each Session", group="Session Settings")
+showSessionBreaks = input.bool(false,"Show Session Breaks", group="Session Settings")
+
+// === Session Time Filter ===
+useTimeFilter     = input.bool(false,"Use Session Time Filter", group="Session Settings")
+avoidFirstMinutes = input.int(1, "Avoid First X Minutes of Session", minval=0, maxval=60, group="Session Settings")
+avoidLastMinutes  = input.int(5, "Avoid Last X Minutes of Session",  minval=0, maxval=60, group="Session Settings")
+
+// === Signal Management Settings ===
+minBarsBetweenSignals = input.int(10,"Min Bars Between Signals", minval=5, maxval=50, group="Signal Management")
+signalCooldownActual = presetConfig == "Scalping (1-5m)" ? 5 :
+                       presetConfig == "Intraday (15-30m)" ? 15 :
+                       presetConfig == "Swing (60m+)" ? 30 :
+                       minBarsBetweenSignals
+
+// === Keltner Channel Settings ===
+useKeltner        = input.bool(true, "Use Keltner Channel Deviation", group="Keltner Settings")
+keltnerLength     = input.int(20, "Keltner Length", minval=10, maxval=100, group="Keltner Settings")
+keltnerMultiplier = input.float(2.0,"Keltner Multiplier", minval=0.5, maxval=5.0, step=0.1, group="Keltner Settings")
+keltnerATRLength  = input.int(10, "Keltner ATR Length", minval=5, maxval=50, group="Keltner Settings")
+
+// === Momentum Exhaustion Settings ===
+useMomentumExhaustion    = input.bool(true,"Use Momentum Exhaustion", group="Momentum Settings")
+momentumLength           = input.int(10,"Momentum Length", minval=5, maxval=30, group="Momentum Settings")
+momentumThresholdMulti   = input.float(2.5,"Momentum Threshold (ATR)", minval=1.0, maxval=5.0, step=0.1, group="Momentum Settings")
+consecutiveBarsThreshold = input.int(4,"Consecutive Strong Bars", minval=2, maxval=10, group="Momentum Settings")
+
+// === CVD Rate of Change Settings ===
+useCVDRoC       = input.bool(true, "Use CVD Rate of Change", group="CVD RoC Settings")
+cvdRoCLength    = input.int(4, "CVD RoC Length", minval=1, maxval=20, group="CVD RoC Settings")
+cvdRoCThreshold = input.float(1,"CVD RoC Threshold (ATR)", minval=0.5, maxval=5.0, step=0.1, group="CVD RoC Settings")
+
+
+// === Multi-Timeframe Analysis ===
+useHTF        = input.bool(true, "Use Higher Timeframe Context", group="Multi-Timeframe")
+htfMultiplier = input.int(5, "HTF Multiplier", minval=2, maxval=10, group="Multi-Timeframe")
+showHTFTrend  = input.bool(true, "Show HTF Trend Info", group="Multi-Timeframe")
+
+// === Volatility Term Structure (VIX/VX1) ===
+groupTS           = "Volatility Term Structure"
+useVixFilter      = input.bool(true,  "Use VIX/VX1 Filter", group=groupTS)
+vixSymbol         = input.string("CFE:VX1!", "VIX Symbol", group=groupTS)
+vx1Symbol         = input.string("CFE:VX2!", "VX1 Front-Month Symbol", group=groupTS)
+vixTF             = input.string("60", "VIX/VX1 Timeframe", options=["60","D"], group=groupTS)
+tsLen             = input.int(30,     "TS Smoothing Length", minval=5, group=groupTS)
+backwardationThr  = input.float(-0.02,"Backwardation Thr ( (VX1-VIX)/VIX )", step=0.005, group=groupTS)
+contangoThr       = input.float(0.05, "Contango Thr ( (VX1-VIX)/VIX )",     step=0.005, group=groupTS)
+tsWeight          = input.float(0.12, "MinScore Weight (+/- max %)", minval=0.0, maxval=0.3, step=0.01, group=groupTS)
+
+
+// Determine HTF & TF helpers
+var string htf_timeframe = timeframe.isminutes ? (timeframe.multiplier <= 5 ? "15" : timeframe.multiplier <= 15 ? "60" : timeframe.multiplier <= 60 ? "240" : "D") : "W"
+var int actualTimeframeInt = timeframe.isminutes ? timeframe.multiplier : 60
+var bool tf_is_seconds = str.endswith(timeframe.period, "S")
+var bool isScalpMode = presetConfig == "Scalping (1-5m)" or tf_is_seconds or actualTimeframeInt <= 1
+
+// Get HTF data (non-repainting)
+//htf_close = request.security(syminfo.tickerid, htf_timeframe, close, lookahead=barmerge.lookahead_off)
+//htf_ema20 = request.security(syminfo.tickerid, htf_timeframe, ta.ema(close, 20), lookahead=barmerge.lookahead_off)
+//htf_ema50 = request.security(syminfo.tickerid, htf_timeframe, ta.ema(close, 50), lookahead=barmerge.lookahead_off)
+//htf_atr   = request.security(syminfo.tickerid, htf_timeframe, ta.atr(14), lookahead=barmerge.lookahead_off)
+
+[htf_close, htf_ema20, htf_ema50, htf_atr] = request.security(syminfo.tickerid, htf_timeframe,    [close, ta.ema(close, 20), ta.ema(close, 50), ta.atr(14)], lookahead=barmerge.lookahead_off)
+
+htf_trend = htf_close > htf_ema20 and htf_ema20 > htf_ema50 ? 1 : htf_close < htf_ema20 and htf_ema20 < htf_ema50 ? -1 : 0
+position_bias = htf_trend == 1 ? "Longs preferred" : htf_trend == -1 ? "Shorts preferred" : "Neutral"
+
+// === Display Settings ===
+showLabels        = input.bool(true,  "Show Entry Labels", group="Display Settings")
+showAlerts        = input.bool(true,  "Enable Alerts", group="Display Settings")
+highlightCandles  = input.bool(true,  "Highlight Liquidation Candles", group="Display Settings")
+showZones         = input.bool(true,  "Show Liquidation Zones", group="Display Settings")
+showCVD           = input.bool(false, "Show CVD Line", group="Display Settings")
+showCVDDivergence = input.bool(true,  "Show CVD Divergences", group="Display Settings")
+showTable         = input.bool(true,  "Show Info Table", group="Display Settings")
+showDivStrength   = input.bool(true,  "Show Divergence Strength", group="Display Settings")
+
+// === Apply presets to additional parameters (OVERRIDES for Scalp) ===
+atrMultiplierActual = presetConfig == "Scalping (1-5m)" ? 0.5 :
+                      presetConfig == "Intraday (15-30m)" ? 0.6 :
+                      presetConfig == "Swing (60m+)" ? 0.8 : atrMultiplier
+
+
+// === Bars / ATR / dynamic lookback ===
+minBarsRequired = math.max(100, math.max(lookback, math.max(volumeLookback, math.max(rsiPeriod, cvdLookback))))
+hasEnoughData = bar_index >= minBarsRequired + 50
+atr = ta.sma(ta.tr, lookback)                    
+
+// Softer vol demand in Scalp mode
+volumeMultiplierActual = presetConfig == "Scalping (1-5m)" ? 1.6 :presetConfig == "Intraday (15-30m)" ? 3.0 :presetConfig == "Swing (60m+)" ? 4.0 : volumeMultiplier
+
+volumeExhaustMultiActual = presetConfig == "Scalping (1-5m)" ? 0.5 :presetConfig == "Intraday (15-30m)" ? 0.7 :presetConfig == "Swing (60m+)" ? 0.9 : volumeExhaustMulti
+
+minConfirmScoreActual = presetConfig == "Scalping (1-5m)" ? 35 : presetConfig == "Intraday (15-30m)" ? 45 : presetConfig == "Swing (60m+)" ? 55 : minConfirmScore
+
+momentumThresholdActual = presetConfig == "Scalping (1-5m)" ? 1.5 :
+                          presetConfig == "Intraday (15-30m)" ? 2.0 :
+                          presetConfig == "Swing (60m+)" ? 3.0 : momentumThreshold
+
+// Faster CVD smoothing for Scalp
+cvdSmoothPeriod = presetConfig == "Scalping (1-5m)" ? 3 :
+                  presetConfig == "Intraday (15-30m)" ? 7 :
+                  presetConfig == "Swing (60m+)" ? 14 : cvdSmoothing
+
+// === Ultra Volume (kept from your V3, but short-circuits for futures) ===
+// Consolidated Ultra Volume Function (OPTIMIZED)
+get_ultra_volume() =>
+    total_volume = nz(volume, 0)
+    if not use_ultra_data or market_type == "Commodities"
+        total_volume
+    else
+        // Batch security requests by market type instead of individual calls
+        if market_type == "Forex"
+            // Single call with tuple return for multiple exchanges
+            [oanda_vol, forexcom_vol, pepper_vol, capital_vol, ic_vol] = request.security("OANDA:" + syminfo.ticker, timeframe.period,[volume,request.security("FOREXCOM:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true),request.security("PEPPERSTONE:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true),request.security("CAPITALCOM:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true),                 request.security("ICMARKETS:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true)],ignore_invalid_symbol=true, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+            total_volume + nz(oanda_vol,0) + nz(forexcom_vol,0) + nz(pepper_vol,0) + nz(capital_vol,0) + nz(ic_vol,0)
+        else if market_type == "Crypto"
+            // Batch crypto exchange requests
+            [bitstamp_vol, coinbase_vol, binance_vol, bitfinex_vol, kraken_vol] = request.security("BITSTAMP:" + syminfo.ticker, timeframe.period,[volume,request.security("COINBASE:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true),request.security("BINANCE:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true),request.security("BITFINEX:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true),                 request.security("KRAKEN:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true)],ignore_invalid_symbol=true, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)            
+            total_volume + nz(bitstamp_vol,0) + nz(coinbase_vol,0) + nz(binance_vol,0) + nz(bitfinex_vol,0) + nz(kraken_vol,0)        
+        else if market_type == "Stock"
+            // Batch stock exchange requests  
+            [nyse_vol, nasdaq_vol, amex_vol, otc_vol, tsx_vol] = request.security("NYSE:" + syminfo.ticker, timeframe.period,[volume,request.security("NASDAQ:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true),request.security("AMEX:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true),request.security("OTC:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true),                 request.security("TSX:" + syminfo.ticker, timeframe.period, volume, ignore_invalid_symbol=true)],ignore_invalid_symbol=true, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+            total_volume + nz(nyse_vol,0) + nz(nasdaq_vol,0) + nz(amex_vol,0) + nz(otc_vol,0) + nz(tsx_vol,0)
+        else
+            total_volume
+
+// === Session detection/time windows ===
+isNewDay   = ta.change(time("D")) != 0
+isRTHStart = not useETH and hour == 8 and minute == 30 and hour[1]*60 + minute[1] < 9*60 + 30
+isETHStart = useETH and hour == 17 and minute == 0  and hour[1]*60 + minute[1] < 18*60
+isNewSession = resetCVD and (useETH ? isETHStart : isRTHStart)
+
+minutesSinceOpen  = useETH ? (hour*60 + minute - 18*60) % (24*60) : (hour*60 + minute - 9*60 - 30)
+minutesUntilClose = useETH ? (17*60 - (hour*60 + minute)) % (24*60) : (65*60 - (hour*60 + minute))
+sessionTimeOK = not useTimeFilter or (minutesSinceOpen >= avoidFirstMinutes and minutesUntilClose >= avoidLastMinutes)
+
+// ========================================================================
+// DYNAMIC THRESHOLD SYSTEM IMPLEMENTATION
+// ========================================================================
+
+// Volatility-Based Threshold Calculation
+calculate_dynamic_thresholds() =>
+    // Base volatility measures
+    atr_volatility = ta.atr(14)
+    price_volatility = ta.stdev(ta.roc(close, 1), volatilityLookback)
+    volume_volatility = ta.stdev(ta.roc(volume, 1), volatilityLookback)
+    
+    // Normalize volatilities (0-1 scale)
+    atr_normalized = atr_volatility / ta.sma(atr_volatility, volatilityLookback)
+    price_vol_normalized = price_volatility / ta.sma(price_volatility, volatilityLookback)
+    
+    // Composite volatility score
+    composite_volatility = (atr_normalized * 0.4 + price_vol_normalized * 0.6)
+    
+    // Market regime multiplier
+    [diPlus, diMinus, adxValue] = ta.dmi(14, 14)
+    [bb_upper, bb_basis, bb_lower] = ta.bb(close, 20, 2)
+    bb_width_ratio = (bb_upper - bb_lower) / bb_basis / ta.sma((bb_upper - bb_lower) / bb_basis, 50)
+    
+    regime_multiplier = switch
+        adxValue > 25 and bb_width_ratio > 1.2 => 1.4  // Trending volatile
+        adxValue > 25 => 1.1                            // Trending smooth  
+        bb_width_ratio > 1.2 => 0.9                     // Ranging volatile
+        => 0.7                                           // Ranging tight
+    
+    // Time-of-day adjustment
+    hour_adjustment = switch hour
+        9 => 1.2   // Market open
+        10 => 1.1  // Early session
+        15 => 1.2  // Late session  
+        16 => 1.3  // Market close
+        => 1.0     // Regular hours
+    
+    // Final dynamic threshold
+    base_threshold = 1 //baseThresholdMultiplier
+    dynamic_factor = composite_volatility * regime_multiplier * hour_adjustment
+    
+    [base_threshold * dynamic_factor, composite_volatility, regime_multiplier]
+
+// Adaptive threshold variables with exponential smoothing
+var float adaptive_cvd_threshold = 1.0
+var float adaptive_volume_threshold = 3.0
+var float adaptive_momentum_threshold = 2.0
+
+[current_threshold_multiplier, volatility_score, regime_mult] = calculate_dynamic_thresholds()
+
+if useDynamicThresholds
+    // Smooth adaptation to prevent whipsawing
+    atr_percentile = ta.percentrank(atr, 100)
+    sensitivity_mult = atr_percentile > 80 ? 0.7 : atr_percentile < 20 ? 1.3 : 1.0
+    
+    adaptive_cvd_threshold := adaptive_cvd_threshold + (current_threshold_multiplier * 1.0 - adaptive_cvd_threshold) * adaptationSpeed
+    adaptive_volume_threshold := adaptive_volume_threshold + (current_threshold_multiplier * 3.0 - adaptive_volume_threshold) * adaptationSpeed  
+    adaptive_momentum_threshold := adaptive_momentum_threshold + (current_threshold_multiplier * 2.0 * sensitivity_mult - adaptive_momentum_threshold) * adaptationSpeed
+else
+    // Use static thresholds from original implementation
+    adaptive_cvd_threshold := cvdDivThreshold
+    adaptive_volume_threshold := volumeMultiplier
+    adaptive_momentum_threshold := momentumThreshold
+
+// ========================================================================
+// ENHANCED VIX VOLATILITY SURFACE ANALYSIS
+// ========================================================================
+
+// Multi-Point VIX Term Structure Analysis
+get_enhanced_vix_data() =>
+    if useEnhancedVix
+        // Get multiple VIX points for curve analysis
+        [vix_spot, vix9d, vx1, vx2, vx3] = request.security(vixSymbol, vixTF,[close,request.security(vix9dSymbol, vixTF, close, ignore_invalid_symbol=true),request.security(vixFrontMonth, vixTF, close, ignore_invalid_symbol=true),request.security(vixSecondMonth, vixTF, close, ignore_invalid_symbol=true),request.security(vixThirdMonth, vixTF, close, ignore_invalid_symbol=true)],            ignore_invalid_symbol=true, lookahead=barmerge.lookahead_off)
+        [vix_spot, vix9d, vx1, vx2, vx3]
+    else
+        [na, na, na, na, na]
+
+[vix_spot, vix9d, vx1, vx2, vx3] = get_enhanced_vix_data()
+
+// Advanced VIX Curve Analysis
+analyze_vix_curve() =>
+    if not na(vix_spot) and not na(vx1) and not na(vx2) and not na(vx3)
+        // Multiple curve slopes
+        front_slope = (vx1 - vix_spot) / vix_spot          // 0-30 day slope
+        second_slope = (vx2 - vx1) / vx1                   // 30-60 day slope  
+        third_slope = (vx3 - vx2) / vx2                    // 60-90 day slope
+        
+        // Curve shape analysis
+        curvature = second_slope - front_slope             // Curve bend
+        curve_acceleration = third_slope - second_slope    // Rate of change in curve
+        
+        // VIX9D vs VIX spread (short-term stress)
+        short_term_stress = not na(vix9d) ? (vix9d - vix_spot) / vix_spot : 0.0
+        
+        // Volatility term structure regimes
+        ts_regime = switch
+            front_slope < -0.05 and curvature < -0.02 => -2    // Deep backwardation  
+            front_slope < -0.02 => -1                          // Backwardation
+            front_slope > 0.08 and curvature > 0.02 => 2       // Steep contango
+            front_slope > 0.02 => 1                            // Contango
+            => 0                                                // Flat
+        
+        // Volatility surface stress indicators
+        term_structure_stress = math.abs(front_slope) + math.abs(curvature) * 0.5
+        short_term_premium = short_term_stress > 0.02 ? 1 : short_term_stress < -0.02 ? -1 : 0
+        
+        // Risk regime classification
+        risk_regime = switch
+            ts_regime <= -1 and short_term_premium >= 0 => "Crisis"
+            ts_regime <= -1 => "Stress" 
+            ts_regime >= 1 and term_structure_stress < 0.03 => "Complacent"
+            ts_regime >= 1 => "Elevated"
+            => "Normal"
+        
+        [ts_regime, front_slope, curvature, short_term_stress, risk_regime, term_structure_stress]
+    else
+        [0, 0.0, 0.0, 0.0, "Unknown", 0.0]
+
+[vix_ts_regime, vix_front_slope, vix_curvature, vix_short_stress, vix_risk_regime, vix_term_stress] = analyze_vix_curve()
+
+// Enhanced VIX-based market regime adjustment
+get_vix_regime_adjustment() =>
+    base_adjustment = 1.0
+    
+    if useEnhancedVix and vix_risk_regime != "Unknown"
+        regime_adjustment = switch vix_risk_regime
+            "Crisis" => 0.6      // Much easier signals in crisis
+            "Stress" => 0.8      // Easier signals in stress
+            "Normal" => 1.0      // Standard thresholds
+            "Elevated" => 1.2    // Slightly harder signals
+            "Complacent" => 1.4  // Much harder signals when complacent
+            => 1.0
+        
+        // Additional adjustment for curve dynamics
+        curve_adjustment = switch
+            math.abs(vix_curvature) > 0.05 => 0.9   // High curvature = unstable
+            vix_term_stress > 0.1 => 0.85            // High term stress = opportunity
+            => 1.0
+        
+        regime_adjustment * curve_adjustment
+    else
+        base_adjustment
+
+vix_regime_multiplier = get_vix_regime_adjustment()
+
+// ========================================================================
+// ADAPTIVE PARAMETER APPLICATION
+// ========================================================================
+
+// Apply dynamic thresholds to existing calculations (replace static ones)
+
+// Dynamic CVD thresholds
+dynamic_cvd_div_threshold = adaptive_cvd_threshold
+dynamic_cvd_roc_threshold = adaptive_cvd_threshold * 2.0
+
+// Dynamic volume thresholds  
+dynamic_volume_multiplier = adaptive_volume_threshold
+dynamic_volume_exhaustion = adaptive_volume_threshold * 0.3
+
+// Dynamic momentum thresholds
+dynamic_momentum_threshold = adaptive_momentum_threshold
+dynamic_atr_multiplier = adaptive_momentum_threshold * 0.3
+
+// Apply VIX regime adjustment to minimum confirmation scores
+enhanced_min_score_adjustment = vix_regime_multiplier * volSurfaceWeight
+final_min_score_multiplier = 1.0 + (enhanced_min_score_adjustment - 1.0) * volSurfaceWeight
+
+
+// === CVD calc ===
+current_volume = get_ultra_volume()
+price_range = high - low
+mid_point = (high + low) / 2
+close_position = price_range > 0 ? (close - low) / price_range : 0.5
+temp_atr = ta.rma(ta.tr, 14)
+velocity = temp_atr > 0 ? (close - open) / temp_atr : 0
+
+buying_pressure  = current_volume * (close_position * 0.7 + math.max(0,  velocity) * 0.3)
+selling_pressure = current_volume * ((1 - close_position) * 0.7 + math.max(0, -velocity) * 0.3)
+volume_delta = buying_pressure - selling_pressure
+
+var float cvdRaw = 0.0
+var float sessionVolume = 0.0
+var float sessionBuyVol = 0.0
+var float sessionSellVol = 0.0
+
+
+if isNewSession
+    cvdRaw := volume_delta
+    sessionVolume := current_volume
+    sessionBuyVol := buying_pressure
+    sessionSellVol := selling_pressure
+else
+    cvdRaw += volume_delta
+    sessionVolume += current_volume
+    sessionBuyVol += buying_pressure
+    sessionSellVol += selling_pressure
+
+cvdNormalized = normalizeCVD and sessionVolume > 0 ? (cvdRaw / sessionVolume) * 100 : cvdRaw
+cvdSmooth = ta.ema(normalizeCVD ? cvdNormalized : cvdRaw, cvdSmoothPeriod)
+
+// Fast and slow CVD for different turn types
+cvdFast = ta.ema(cvdRaw, math.max(3, cvdSmoothPeriod / 3))
+cvdSlow = ta.ema(cvdRaw, cvdSmoothPeriod * 2)
+
+// CVD momentum divergence
+cvdCrossUp = ta.crossover(cvdFast, cvdSlow)
+cvdCrossDown = ta.crossunder(cvdFast, cvdSlow)
+
+// Rate of change for both
+cvdRoCFast = (cvdFast - cvdFast[5]) / atr
+cvdRoCSlow = (cvdSlow - cvdSlow[20]) / atr
+
+// === Other calcs ===
+avgVolume = ta.sma(current_volume, volumeLookback)
+vwapValue = ta.vwap(hlc3)
+vwapDev   = ta.stdev(hlc3, vwapLookback)
+vwapUpper = vwapValue + vwapDev * vwapDeviation
+vwapLower = vwapValue - vwapDev * vwapDeviation
+rsi = ta.rsi(close, rsiPeriod)
+
+// Trend context
+trend_ema_fast = ta.ema(close, trendEMAFast)
+trend_ema_slow = ta.ema(close, trendEMASlow)
+is_uptrend   = close > trend_ema_fast and trend_ema_fast > trend_ema_slow
+is_downtrend = close < trend_ema_fast and trend_ema_fast < trend_ema_slow
+trend_strength   = math.abs(trend_ema_fast - trend_ema_slow) / trend_ema_slow * 100
+strong_uptrend   = is_uptrend   and trend_strength > trendStrengthRequired
+strong_downtrend = is_downtrend and trend_strength > trendStrengthRequired
+
+// === Market Regime ===
+detect_regime() =>
+    [diPlus, diMinus, adxValue] = ta.dmi(14,14)
+    [bb_upper, bb_basis, bb_lower] = ta.bb(close, 20, 2)
+    bb_width = (bb_upper - bb_lower) / bb_basis
+    bb_width_avg = ta.sma(bb_width, 50)
+    regime = "unknown"
+    if adxValue > 25 and bb_width > bb_width_avg * 1.2
+        regime := "trending_volatile"
+    else if adxValue > 25
+        regime := "trending_smooth"
+    else if bb_width > bb_width_avg * 1.2
+        regime := "ranging_volatile"
+    else
+        regime := "ranging_tight"
+    regime
+
+market_regime = detect_regime()
+regime_multiplier = market_regime == "trending_volatile" ? 1.2 : market_regime == "trending_smooth" ? 1.0 : market_regime == "ranging_volatile" ? 0.9 : market_regime == "ranging_tight" ? 0.8 : 1.0
+
+// Structure identification
+detect_market_structure() =>
+    lookback = timeframe.isminutes ? (timeframe.multiplier <= 5 ? 20 : 50) : 100    
+    // Higher highs/lows for uptrend
+    hh = high > ta.highest(high[1], lookback/2)
+    hl = low > ta.lowest(low[1], lookback/2)
+    
+    // Lower highs/lows for downtrend
+    lh = high < ta.highest(high[1], lookback/2)
+    ll = low < ta.lowest(low[1], lookback/2)
+    
+    // Structure breaks
+    bullish_break = ll[1] and hh  // Was making lower lows, now higher high
+    bearish_break = hh[1] and ll  // Was making higher highs, now lower low
+    
+    [bullish_break, bearish_break, hh and hl, ll and lh]
+
+[bull_structure_break, bear_structure_break, uptrend_structure, downtrend_structure] = detect_market_structure()
+
+
+trendAlignmentLong  = not useTrendFilter or is_downtrend or (not strong_uptrend)
+trendAlignmentShort = not useTrendFilter or is_uptrend   or (not strong_downtrend)
+
+
+
+// --- VIX/VX1 term structure (contango/backwardation) ---
+[vixClose, vx1Close] = request.security(vixSymbol, vixTF,[close, request.security(vx1Symbol, vixTF, close, ignore_invalid_symbol=true)],ignore_invalid_symbol=true, lookahead=barmerge.lookahead_off)
+tsOK     = useVixFilter and not na(vixClose) and not na(vx1Close) and vixClose > 0
+
+// spread > 0 => contango (calmer/trendier); spread < 0 => backwardation (stressy/mean-reverting)
+tsSpread   = tsOK ? (vx1Close - vixClose) / vixClose : 0.0
+tsSpreadMA = tsOK ? ta.sma(tsSpread, tsLen) : 0.0
+tsZ        = tsOK ? (tsSpread - tsSpreadMA) / ta.stdev(tsSpread, tsLen) : 0.0
+
+// Discrete regime for robust gating
+tsRegime = tsOK ? (tsSpread < backwardationThr ? -1 : tsSpread > contangoThr ? 1 : 0) : 0
+// Multiplier for your min score (±tsWeight). Contango => harder to trigger reversals; Backwardation => easier.
+termAdjFactorRaw = 1.0 + (tsRegime * tsWeight)
+termAdjFactor    = tsOK ? math.min(1.0 + tsWeight, math.max(1.0 - tsWeight, termAdjFactorRaw)) : 1.0
+
+
+// --- Dynamic CVD lookback (bar-0 safe) ---
+var int cvdLookbackActual = 50  // safe default so it's never na on bar 0
+
+atrSma100          = ta.sma(atr, 100)
+atrBase            = nz(atrSma100, atr)              // avoid div by na/0
+atrRatio           = atrBase == 0 ? 1.0 : atr / atrBase
+atrPeriodDynamic   = timeframe.isminutes ? (timeframe.multiplier <= 5 ? 14 : timeframe.multiplier <= 30 ? 20 : 30) : 30
+cvdLookbackDynRaw  = math.round(atrPeriodDynamic * 2.5 * (1 + (atrRatio - 1) * 0.5))
+cvdLookbackDyn     = int(math.max(20, math.min(200, nz(cvdLookbackDynRaw, 50))))   // clamp + fallback
+
+cvdFromPreset      = presetConfig == "Scalping (1-5m)"    ? 30 :
+                     presetConfig == "Intraday (15-30m)"  ? 80 :
+                     presetConfig == "Swing (60m+)"       ? 200 : cvdLookback
+
+cvdLookbackActual := use_dynamic_lookback ? cvdLookbackDyn : cvdFromPreset
+
+// Keep your previous override behavior
+if presetConfig == "Intraday (15-30m)" and (timeframe.isminutes and timeframe.multiplier <= 5)
+    cvdLookbackActual := 40
+    minConfirmScoreActual := 70
+
+// Tighten for true scalping
+if presetConfig == "Scalping (1-5m)"
+    cvdLookbackActual := math.max(15, math.min(cvdLookbackActual, 120))
+
+// Precompute a stable SMA for table/logic usage
+cvdTrendLen = math.max(1, int(cvdLookbackActual))
+cvdTrendMA  = ta.sma(cvdSmooth, cvdTrendLen)
+
+if use_dynamic_lookback
+    atrRatio = atr / ta.sma(atr, 100)
+    atrPeriodDynamic = (timeframe.isminutes ? (timeframe.multiplier <= 5 ? 14 : timeframe.multiplier <= 30 ? 20 : 30) : 30)
+    cvdLookbackDynamic = math.round(atrPeriodDynamic * 2.5 * (1 + (atrRatio - 1) * 0.5))
+    cvdLookbackActual := math.max(20, math.min(200, cvdLookbackDynamic))
+else
+    cvdLookbackActual := presetConfig == "Scalping (1-5m)" ? 30 : presetConfig == "Intraday (15-30m)" ? 80 : presetConfig == "Swing (60m+)" ? 200 : cvdLookback
+
+// If user chose Intraday preset but is on <=5m, keep your previous override
+presetOverride = presetConfig == "Intraday (15-30m)" and actualTimeframeInt <= 5
+if presetOverride
+    cvdLookbackActual := 40
+    minConfirmScoreActual := 70
+
+// Extra: tighten for true Scalp
+if isScalpMode
+    cvdLookbackActual := math.max(15, math.min(cvdLookbackActual, 120))
+
+// === Keltner / VWAP2 / momentum / CVD-RoC ===
+basis = ta.ema(close, keltnerLength)
+keltnerATR = ta.atr(keltnerATRLength)
+upperKeltner = basis + keltnerMultiplier * keltnerATR
+lowerKeltner = basis - keltnerMultiplier * keltnerATR
+
+vwapUpper2 = vwapValue + vwapDev * vwapDeviation2
+vwapLower2 = vwapValue - vwapDev * vwapDeviation2
+
+momentum = close - close[momentumLength]
+momentumATR = momentum / atr
+avgMomentum = ta.sma(momentumATR, momentumLength)
+
+cvdRoC = (cvdSmooth - cvdSmooth[cvdRoCLength]) / atr
+cvdRoCSmooth = ta.ema(cvdRoC, 3)
+
+// === CVD divergences (fractal-based) ===
+high_pivot = ta.pivothigh(fractal_periods, fractal_periods)
+low_pivot  = ta.pivotlow(fractal_periods,  fractal_periods)
+high_fractal = not na(high_pivot) and (is_uptrend or close[fractal_periods] > trend_ema_slow)
+low_fractal  = not na(low_pivot)  and (is_downtrend or close[fractal_periods] < trend_ema_slow)
+
+fractal_periods_adaptive = timeframe.isminutes ?  (timeframe.multiplier <= 5 ? 2 :      timeframe.multiplier <= 15 ? 3 :      timeframe.multiplier <= 60 ? 5 : 8) : 10
+// For swing detection on higher timeframes  
+swing_fractal_periods = fractal_periods_adaptive * 3
+major_high_pivot = ta.pivothigh(swing_fractal_periods, swing_fractal_periods)
+major_low_pivot = ta.pivotlow(swing_fractal_periods, swing_fractal_periods)
+
+var int consecutive_bear_div = 0
+var int consecutive_bull_div = 0
+
+detect_bearish_cvd_divergence() =>
+    if not hasEnoughData
+        [false, 0]
+    else
+        last_high_price = ta.valuewhen(high_fractal, high[fractal_periods], 0)
+        prev_high_price = ta.valuewhen(high_fractal, high[fractal_periods], 1)
+        last_high_cvd = ta.valuewhen(high_fractal, cvdSmooth[fractal_periods], 0)
+        prev_high_cvd = ta.valuewhen(high_fractal, cvdSmooth[fractal_periods], 1)
+        last_high_bar = ta.valuewhen(high_fractal, bar_index[fractal_periods], 0)
+        prev_high_bar = ta.valuewhen(high_fractal, bar_index[fractal_periods], 1)
+        bars_between = int(last_high_bar - prev_high_bar)
+        time_condition = (last_high_bar + max_bars_between) > bar_index
+        bars_valid = bars_between >= min_bars_between and bars_between <= max_bars_between
+        price_change = (last_high_price - prev_high_price) / prev_high_price * 100
+        cvd_change   = (last_high_cvd - prev_high_cvd) / math.abs(prev_high_cvd) * 100
+        price_higher = price_change > (0.1 / divergence_sensitivity)
+        cvd_lower    = cvd_change  < -(dynamic_cvd_div_threshold  / divergence_sensitivity)
+        valid_data = not na(last_high_cvd) and not na(prev_high_cvd) and math.abs(prev_high_cvd) > 0
+        price_sig = math.abs(price_change) > 0.5
+        cvd_sig   = math.abs(cvd_change)   > 2.0
+        [price_higher and cvd_lower and valid_data and time_condition and bars_valid and price_sig and cvd_sig, bars_between]
+
+detect_bullish_cvd_divergence() =>
+    if not hasEnoughData
+        [false, 0]
+    else
+        last_low_price = ta.valuewhen(low_fractal, low[fractal_periods], 0)
+        prev_low_price = ta.valuewhen(low_fractal, low[fractal_periods], 1)
+        last_low_cvd = ta.valuewhen(low_fractal, cvdSmooth[fractal_periods], 0)
+        prev_low_cvd = ta.valuewhen(low_fractal, cvdSmooth[fractal_periods], 1)
+        last_low_bar = ta.valuewhen(low_fractal, bar_index[fractal_periods], 0)
+        prev_low_bar = ta.valuewhen(low_fractal, bar_index[fractal_periods], 1)
+        bars_between = int(last_low_bar - prev_low_bar)
+        time_condition = (last_low_bar + max_bars_between) > bar_index
+        bars_valid = bars_between >= min_bars_between and bars_between <= max_bars_between
+        price_change = (last_low_price - prev_low_price) / prev_low_price * 100
+        cvd_change   = (last_low_cvd - prev_low_cvd) / math.abs(prev_low_cvd) * 100
+        price_lower  = price_change < -(0.1 / divergence_sensitivity)
+        cvd_higher   = cvd_change   > (dynamic_cvd_div_threshold  / divergence_sensitivity)
+        valid_data = not na(last_low_cvd) and not na(prev_low_cvd) and math.abs(prev_low_cvd) > 0
+        price_sig = math.abs(price_change) > 0.5
+        cvd_sig   = math.abs(cvd_change)   > 2.0
+        [price_lower and cvd_higher and valid_data and time_condition and bars_valid and price_sig and cvd_sig, bars_between]
+
+check_phase_change(bars_between_param, is_bullish) =>
+    if not require_phase_change
+        true
+    else
+        phase_changed = false
+        check_length = math.min(bars_between_param, 30)
+        max_lookback = math.min(check_length, bar_index)
+        for i = 1 to max_lookback
+            if is_bullish and cvdSmooth[i] > 0
+                phase_changed := true
+                break
+            else if not is_bullish and cvdSmooth[i] < 0
+                phase_changed := true
+                break
+        phase_changed
+
+// Momentum exhaustion & CVD momentum divergence
+detectMomentumExhaustion(isLong) =>
+    if not hasEnoughData or not useMomentumExhaustion
+        false
+    else
+        consecCount = 0
+        momentumSum = 0.0
+        for i = 0 to consecutiveBarsThreshold - 1
+            if isLong
+                if close[i] < close[i+1] and math.abs(close[i] - close[i+1]) > atr * 0.5
+                    consecCount += 1
+                    momentumSum += (close[i] - close[i+1])
+            else
+                if close[i] > close[i+1] and math.abs(close[i] - close[i+1]) > atr * 0.5
+                    consecCount += 1
+                    momentumSum += (close[i+1] - close[i])
+        momentumExhausted = consecCount >= consecutiveBarsThreshold and math.abs(momentumSum) > atr * momentumThresholdMulti
+        priceExhaustion = isLong ? (close < lowerKeltner or close < vwapLower2) : (close > upperKeltner or close > vwapUpper2)
+        cvdExhaustion   = isLong ? (cvdRoC < -dynamic_cvd_roc_threshold)               : (cvdRoC >  dynamic_cvd_roc_threshold)
+        momentumExhausted and (priceExhaustion or cvdExhaustion)
+
+detectCVDMomentumDivergence(isLong) =>
+    if not hasEnoughData or not useCVDRoC
+        false
+    else
+        if isLong
+            priceLowerLow = low < ta.lowest(low[1], 10)
+            cvdTurningUp  = cvdRoC > cvdRoC[1] and cvdRoC[1] < cvdRoC[2]
+            cvdDivOK      = cvdRoC > -dynamic_cvd_roc_threshold * 0.5
+            priceLowerLow and (cvdTurningUp or cvdDivOK)
+        else
+            priceHigherHigh = high > ta.highest(high[1], 10)
+            cvdTurningDown  = cvdRoC < cvdRoC[1] and cvdRoC[1] > cvdRoC[2]
+            cvdDivOK        = cvdRoC <  dynamic_cvd_roc_threshold * 0.5
+            priceHigherHigh and (cvdTurningDown or cvdDivOK)
+
+[bearish_div, bear_bars] = detect_bearish_cvd_divergence()
+[bullish_div, bull_bars] = detect_bullish_cvd_divergence()
+bear_phase_confirmed = check_phase_change(bear_bars, false)
+bull_phase_confirmed = check_phase_change(bull_bars, true)
+
+consecutive_bear_div := nz(consecutive_bear_div, 0)
+consecutive_bull_div := nz(consecutive_bull_div, 0)
+
+if bearish_div and bear_phase_confirmed
+    consecutive_bear_div += 1
+else if not bearish_div
+    consecutive_bear_div := 0
+if bullish_div and bull_phase_confirmed
+    consecutive_bull_div += 1
+else if not bullish_div
+    consecutive_bull_div := 0
+
+get_divergence_strength(c) => c == 1 ? "Normal" : c == 2 ? "Strong" : c >= 3 ? "Very Strong" : "None"
+bear_div_strength = get_divergence_strength(consecutive_bear_div)
+bull_div_strength = get_divergence_strength(consecutive_bull_div)
+
+// === Liquidation patterns ===
+bodySize(i)=> math.abs(close[i]-open[i])
+candleRange(i)=> high[i]-low[i]
+isBearish(i)=> close[i]<open[i]
+isBullish(i)=> close[i]>open[i]
+isLargeRange(i)=> candleRange(i) > atr * atrMultiplierActual
+upperWick(i)=> high[i]-math.max(open[i],close[i])
+lowerWick(i)=> math.min(open[i],close[i]) - low[i]
+hasLongLiquidationPattern(i)=> isBearish(i) and lowerWick(i) > bodySize(i) * 0.5
+hasShortLiquidationPattern(i)=> isBullish(i) and upperWick(i) > bodySize(i) * 0.5
+
+
+var array<int> longBars = array.new<int>()
+var array<int> shortBars = array.new<int>()
+var int lastLongSignalBar = 0
+var int lastShortSignalBar = 0
+var int lastSide = 0  // 1=long, -1=short
+var table infoTable = table.new(position.bottom_left, 3, 22, bgcolor=color.new(color.black, 85), border_width=1)
+
+
+MAX_ARRAY_SIZE = 100
+
+cleanup_arrays() =>
+    while array.size(longBars) > MAX_ARRAY_SIZE
+        array.shift(longBars)
+    while array.size(shortBars) > MAX_ARRAY_SIZE
+        array.shift(shortBars)
+
+detectLiquidation(isLong)=>
+    if not hasEnoughData
+        [false,0,0]
+    else
+        cnt = 0.0, total = 0.0, start = 0
+        for i=0 to math.min(minConsecutive-1,4)
+            if i < bar_index
+                cond = isLong ? (isBearish(i) or hasLongLiquidationPattern(i)) : (isBullish(i) or hasShortLiquidationPattern(i))
+                if cond and isLargeRange(i)
+                    cnt += 1
+                    total += candleRange(i)
+                    if cnt == 1
+                        start := i
+                else
+                    break
+        [cnt >= minConsecutive and total > atr * dynamic_momentum_threshold, start, int(cnt)]
+
+[longLiquid, longStart, longCount]   = detectLiquidation(true)
+[shortLiquid, shortStart, shortCount]= detectLiquidation(false)
+
+// === Stop-hunt ===
+detect_stop_hunt() =>
+    if not hasEnoughData
+        [false,false]
+    else
+        recent_high = ta.highest(high[1], 10)
+        recent_low  = ta.lowest(low[1], 10)
+        br = high-low
+        uw = br>0 ? (high - math.max(open,close))/br : 0
+        lw = br>0 ? (math.min(open,close) - low)/br : 0
+        shLong  = low  < recent_low  * 0.998 and close > recent_low  and lw > 0.3 and current_volume > avgVolume * 1.5
+        shShort = high > recent_high * 1.002 and close < recent_high and uw > 0.3 and current_volume > avgVolume * 1.5
+        [shLong, shShort]
+
+[stopHuntLong, stopHuntShort] = detect_stop_hunt()
+
+// Reversal patterns
+hammer = (close > open) and  (lowerWick(0) > bodySize(0) * 2) and  (upperWick(0) < bodySize(0) * 0.3) and  (low < ta.lowest(low[1], 5))
+         
+shooting_star = (close < open) and (upperWick(0) > bodySize(0) * 2) and (lowerWick(0) < bodySize(0) * 0.3) and (high > ta.highest(high[1], 5))
+
+// Engulfing patterns
+bullish_engulfing = close > open and close > high[1] and  open < low[1] and close[1] < open[1]
+                    
+bearish_engulfing = close < open and close < low[1] and  open > high[1] and close[1] > open[1]
+
+// Add to scoring (will be used in longScore/shortScore calculation)
+pattern_score_long = (hammer ? 15 : 0) + (bullish_engulfing ? 20 : 0)
+pattern_score_short = (shooting_star ? 15 : 0) + (bearish_engulfing ? 20 : 0)
+
+if longLiquid and hasEnoughData
+    array.clear(longBars)
+    for i=0 to math.min(longCount-1,4)
+        array.push(longBars, i)
+    cleanup_arrays()
+if shortLiquid and hasEnoughData
+    array.clear(shortBars)
+    for i=0 to math.min(shortCount-1,4)
+        array.push(shortBars, i)
+    cleanup_arrays()
+
+// === Scoring ===
+htfAlignmentLong  = useHTF and htf_trend == -1 ? 20 : 0
+htfAlignmentShort = useHTF and htf_trend ==  1 ? 20 : 0
+stopHuntLongBonus  = stopHuntLong  ? 25 : 0
+stopHuntShortBonus = stopHuntShort ? 25 : 0
+regimeBonus = market_regime == "ranging_tight" ? 10 : market_regime == "trending_volatile" ? -10 : 0
+
+//volSpike = current_volume > avgVolume * volumeMultiplierActual
+volSpike = current_volume > avgVolume * dynamic_volume_multiplier
+volMomentum = current_volume > ta.sma(current_volume, 5)
+volQuality = volSpike and current_volume > ta.highest(current_volume[1], 20) * 0.8 and volMomentum
+
+// Volume-weighted momentum
+vwm = (volume * momentum) / ta.sma(volume, momentumLength)
+vwm_ma = ta.sma(vwm, momentumLength)
+
+// Volume climax detection
+volume_climax = volume > ta.highest(volume[1], 20) * 0.9 and math.abs(close - open) > atr * 1.5
+
+// Exhaustion volume pattern
+exhaustion_pattern = volume_climax and  (high > ta.highest(high[1], 10) and close < open) or (low < ta.lowest(low[1], 10) and close > open)
+
+
+
+volSpikeQuality = volSpike and volQuality
+volExhaustion = current_volume < avgVolume * volumeExhaustMultiActual
+volDeclining  = current_volume < current_volume[1] and current_volume[1] < current_volume[2]
+
+vwapBounce = (low  <= vwapLower and close > vwapLower) or (low  <= vwapValue and close > vwapValue)
+vwapReject = (high >= vwapUpper and close < vwapUpper) or (high >= vwapValue and close < vwapValue)
+
+rsiBullishDiv = false, rsiBearishDiv = false
+if hasEnoughData and useRSI
+    if longLiquid and bar_index >= 10
+        rsiBullishDiv := (low < ta.lowest(low[1],5)) and (rsi > ta.lowest(rsi[1],5) + 5)
+    if shortLiquid and bar_index >= 10
+        rsiBearishDiv := (high > ta.highest(high[1],5)) and (rsi < ta.highest(rsi[1],5) - 5)
+
+confirmFactor(cond, bars)=>
+    count = 0
+    if hasEnoughData and array.size(bars) > 0
+        for i=0 to array.size(bars)-1
+            idx = array.get(bars, i)
+            if idx < 5 and idx < bar_index
+                val = idx==0 ? cond : idx==1 ? cond[1] : idx==2 ? cond[2] : idx==3 ? cond[3] : cond[4]
+                if val
+                    count += 1
+    count > 0 ? 1 : 0
+
+div_strength_multiplier_bull = consecutive_bull_div >= 3 ? 1.5 : consecutive_bull_div == 2 ? 1.25 : consecutive_bull_div == 1 ? 1.0 : 0.8
+div_strength_multiplier_bear = consecutive_bear_div >= 3 ? 1.5 : consecutive_bear_div == 2 ? 1.25 : consecutive_bear_div == 1 ? 1.0 : 0.8
+
+longMomentumExhaustion  = detectMomentumExhaustion(true)
+shortMomentumExhaustion = detectMomentumExhaustion(false)
+longCVDMomentumDiv  = detectCVDMomentumDivergence(true)
+shortCVDMomentumDiv = detectCVDMomentumDivergence(false)
+
+longVolumeScore  = longLiquid  and useVolumeConfirm ? confirmFactor(volSpikeQuality, longBars)  * 20 + confirmFactor(volExhaustion or volDeclining, longBars) * 10 : 0
+longVWAPScore    = longLiquid  and useVWAP          ? confirmFactor(vwapBounce,     longBars)  * 15 : 0
+longRSIScore     = longLiquid  and useRSI and rsiBullishDiv ? 10 : 0
+longCVDDivScore  = longLiquid  and useCVDConfirm and bullish_div ? 25 * div_strength_multiplier_bull : 0
+longCVDStrBonus  = longLiquid  ? (bull_div_strength == "Very Strong" ? 15 : bull_div_strength == "Strong" ? 10 : 0) : 0
+
+shortVolumeScore = shortLiquid and useVolumeConfirm ? confirmFactor(volSpikeQuality, shortBars) * 20 + confirmFactor(volExhaustion or volDeclining, shortBars) * 10 : 0
+shortVWAPScore   = shortLiquid and useVWAP          ? confirmFactor(vwapReject,     shortBars) * 15 : 0
+shortRSIScore    = shortLiquid and useRSI and rsiBearishDiv ? 10 : 0
+shortCVDDivScore = shortLiquid and useCVDConfirm and bearish_div ? 25 * div_strength_multiplier_bear : 0
+shortCVDStrBonus = shortLiquid ? (bear_div_strength == "Very Strong" ? 15 : bear_div_strength == "Strong" ? 10 : 0) : 0
+
+// Get signals from multiple timeframes
+[tf_5min_bull, tf_5min_bear, tf_5min_roc] = request.security(syminfo.tickerid, "5",     [bullish_div, bearish_div, cvdRoC], lookahead=barmerge.lookahead_off)
+    
+[tf_15min_bull, tf_15min_bear, tf_15min_roc] = request.security(syminfo.tickerid, "15",     [bullish_div, bearish_div, cvdRoC], lookahead=barmerge.lookahead_off)
+
+// Weight based on current timeframe
+mtf_weight_bull = timeframe.isminutes ? (timeframe.multiplier <= 5 ? 0.7 :  timeframe.multiplier <= 30 ? 0.5 : 0.3) : 0.2             
+
+mtf_weight_5min = timeframe.isminutes ?     (timeframe.multiplier <= 5 ? 0.2 : 0.3) : 0.3
+
+mtf_weight_15min = timeframe.isminutes ?     (timeframe.multiplier <= 5 ? 0.1 : 0.2) : 0.5
+
+// Confluence score
+confluence_bull = (bullish_div ? mtf_weight_bull : 0) +                   (tf_5min_bull ? mtf_weight_5min : 0) +                   (tf_15min_bull ? mtf_weight_15min : 0)
+
+confluence_bear = (bearish_div ? mtf_weight_bull : 0) +                   (tf_5min_bear ? mtf_weight_5min : 0) +                   (tf_15min_bear ? mtf_weight_15min : 0)
+
+// === SCALPING GATES & BONUSES ===============================================
+// Inputs
+groupScalp = "Scalping/Execution"
+useSweepReclaim      = input.bool(true,  "Require Sweep & Reclaim", group=groupScalp)
+sweepTicks           = input.int(6,      "Sweep Size (ticks)", minval=1, group=groupScalp)
+nearVWAPOnly         = input.bool(true,  "Only near Session VWAP Bands", group=groupScalp)
+nearKeltnerOnly      = input.bool(false, "Only at Keltner Extremes", group=groupScalp)
+noiseLookback        = input.int(20,     "Noise Filter Lookback", group=groupScalp)
+noiseMult            = input.float(1.4,  "Min Range vs AvgTR", step=0.1, group=groupScalp)
+allowOppositeBypass  = input.bool(true,  "Bypass Cooldown on Opposite Signal", group=groupScalp)
+timeStopBars         = input.int(4,      "Time Stop (bars)", minval=2, group=groupScalp)
+todWeighting         = input.bool(true,  "Use Time-of-Day Weighting", group=groupScalp)
+lunchStart           = input.int(11*60+30, "Lunch Start (min from 00:00)", group=groupScalp)
+lunchEnd             = input.int(13*60+30, "Lunch End (min from 00:00)",  group=groupScalp)
+
+
+// Session-anchored vwap (resets with session)
+ticks(n) => n * syminfo.mintick
+var float sv_cumPV = na
+var float sv_cumV  = na
+if isNewSession or na(sv_cumPV) or na(sv_cumV)
+    sv_cumPV := hlc3 * current_volume
+    sv_cumV  := current_volume
+else
+    sv_cumPV += hlc3 * current_volume
+    sv_cumV  += current_volume
+sessionVWAP  = sv_cumV > 0 ? sv_cumPV / sv_cumV : na
+sessionDev   = ta.stdev(close, vwapLookback)
+svwapUpper   = sessionVWAP + sessionDev * vwapDeviation
+svwapLower   = sessionVWAP - sessionDev * vwapDeviation
+svwapUpper2  = sessionVWAP + sessionDev * vwapDeviation2
+svwapLower2  = sessionVWAP - sessionDev * vwapDeviation2
+
+// Impulse/noise — softer in Scalp mode
+avgTR  = ta.sma(ta.tr, noiseLookback)
+effNoiseMult = isScalpMode ? noiseMult * 0.8 : noiseMult
+currTR = ta.tr
+isImpulse = currTR > avgTR * effNoiseMult
+
+// ToD weighting (keep light in Scalp)
+minutesToday = hour * 60 + minute
+todFactorBase = todWeighting ? (minutesToday >= lunchStart and minutesToday <= lunchEnd ? 1.15 : (minutesToday < 9*60+45 ? 0.90 : 1.00)) : 1.00
+todFactor = isScalpMode ? 1.00 : todFactorBase
+
+// Sweeps: slightly smaller in Scalp
+sweepTicksEff = isScalpMode ? math.max(1, sweepTicks - 2) : sweepTicks
+lastSwingHigh = ta.valuewhen(high_fractal, high[fractal_periods], 0)
+lastSwingLow  = ta.valuewhen(low_fractal,  low[fractal_periods],  0)
+sweepDown   = not na(lastSwingLow)  and low  < lastSwingLow  - ticks(sweepTicksEff)
+reclaimUp   = sweepDown and close > lastSwingLow
+sweepUp     = not na(lastSwingHigh) and high > lastSwingHigh + ticks(sweepTicksEff)
+reclaimDown = sweepUp   and close < lastSwingHigh
+
+nearSVWAPLong    = nearVWAPOnly    ? (low  <= svwapLower2 or low  <= svwapLower) : true
+nearSVWAPShort   = nearVWAPOnly    ? (high >= svwapUpper2 or high >= svwapUpper) : true
+nearKeltnerLong  = nearKeltnerOnly ? low  <= lowerKeltner : true
+nearKeltnerShort = nearKeltnerOnly ? high >= upperKeltner : true
+
+// Allow context ORs for scalping (VWAP OR sweep/div)
+scalpContextLong  = nearSVWAPLong  or stopHuntLong  or (bullish_div and bull_phase_confirmed)
+scalpContextShort = nearSVWAPShort or stopHuntShort or (bearish_div and bear_phase_confirmed)
+
+// Gating
+scalpGateLong  = (not useSweepReclaim or (sweepDown and reclaimUp))   and nearKeltnerLong  and isImpulse and (isScalpMode ? scalpContextLong  : nearSVWAPLong)
+scalpGateShort = (not useSweepReclaim or (sweepUp   and reclaimDown)) and nearKeltnerShort and isImpulse and (isScalpMode ? scalpContextShort : nearSVWAPShort)
+
+// Scalp bonuses
+scalpSweepBonusLong  = (sweepDown  and reclaimUp)   ? 12 : 0
+scalpSweepBonusShort = (sweepUp    and reclaimDown) ? 12 : 0
+scalpVWAPBonusLong   = (low  <= svwapLower2 or low  <= svwapLower) ? 8 : 0
+scalpVWAPBonusShort  = (high >= svwapUpper2 or high >= svwapUpper) ? 8 : 0
+
+
+// Totals - OLD VERSION WORKING
+//longScore  = longVolumeScore + longVWAPScore + longRSIScore + longCVDDivScore + longCVDStrBonus + (longMomentumExhaustion?30:0) + (longCVDMomentumDiv?25:0) + (low<=lowerKeltner?10:0) + (low<=vwapLower2?10:0) + htfAlignmentLong + stopHuntLongBonus + regimeBonus + scalpSweepBonusLong + scalpVWAPBonusLong
+//shortScore = shortVolumeScore + shortVWAPScore + shortRSIScore + shortCVDDivScore + shortCVDStrBonus + (shortMomentumExhaustion?30:0)+ (shortCVDMomentumDiv?25:0)+ (high>=upperKeltner?10:0)+ (high>=vwapUpper2?10:0)+ htfAlignmentShort+ stopHuntShortBonus+ regimeBonus + scalpSweepBonusShort + scalpVWAPBonusShort
+
+// Enhanced scoring with all new components
+longScore  = longVolumeScore + longVWAPScore + longRSIScore + longCVDDivScore +  longCVDStrBonus + (longMomentumExhaustion?30:0) + (longCVDMomentumDiv?25:0) + (low<=lowerKeltner?10:0) + (low<=vwapLower2?10:0) + htfAlignmentLong + stopHuntLongBonus + regimeBonus + scalpSweepBonusLong + scalpVWAPBonusLong +pattern_score_long + (bull_structure_break?25:0) + (confluence_bull*30) +(exhaustion_pattern and low < ta.lowest(low[1], 10) ? 20 : 0)
+
+shortScore = shortVolumeScore + shortVWAPScore + shortRSIScore + shortCVDDivScore + shortCVDStrBonus + (shortMomentumExhaustion?30:0) + (shortCVDMomentumDiv?25:0) + (high>=upperKeltner?10:0) + (high>=vwapUpper2?10:0) + htfAlignmentShort + stopHuntShortBonus + regimeBonus + scalpSweepBonusShort + scalpVWAPBonusShort +pattern_score_short + (bear_structure_break?25:0) + (confluence_bear*30) +(exhaustion_pattern and high > ta.highest(high[1], 10) ? 20 : 0)
+
+//removed tsScoreNudge
+//tsScoreNudge = tsRegime == -1 ? 4 : tsRegime == 1 ? -4 : 0 
+tsScoreNudge = 0
+longScore  += tsScoreNudge
+shortScore += tsScoreNudge
+
+// Adjusted minimum score (lighter in Scalp)
+rawAdjMin = minConfirmScoreActual * regime_multiplier * todFactor
+adjustedMinScore = isScalpMode ? math.round(math.min(45, math.max(22, rawAdjMin - 8))) : math.round(rawAdjMin)
+
+// NEW: apply VIX/VX1 term-structure adjustment
+minScoreVIX = math.round(adjustedMinScore * termAdjFactor * final_min_score_multiplier)
+
+
+// Cooldown (opposite-side bypass stays)
+longCooldownOK  = (bar_index - lastLongSignalBar  >= signalCooldownActual) or (allowOppositeBypass and lastSide == -1)
+shortCooldownOK = (bar_index - lastShortSignalBar >= signalCooldownActual) or (allowOppositeBypass and lastSide ==  1)
+
+// Trigger counts & single-trigger relax for Scalp
+longTriggerCount  = (longLiquid?1:0)  + (longMomentumExhaustion?1:0)  + (longCVDMomentumDiv?1:0)
+shortTriggerCount = (shortLiquid?1:0) + (shortMomentumExhaustion?1:0) + (shortCVDMomentumDiv?1:0)
+singleTriggerLong  = isScalpMode ? (longTriggerCount  >= 1) : (not requireSingleTrigger or longTriggerCount  == 1)
+singleTriggerShort = isScalpMode ? (shortTriggerCount >= 1) : (not requireSingleTrigger or shortTriggerCount == 1)
+
+// Final signals
+baseLong  = (longLiquid or longMomentumExhaustion or longCVDMomentumDiv or stopHuntLong)
+baseShort = (shortLiquid or shortMomentumExhaustion or shortCVDMomentumDiv or stopHuntShort)
+highProbLong  = baseLong  and longScore  >= minScoreVIX and longCooldownOK  and (isScalpMode ? true : trendAlignmentLong)  and singleTriggerLong  and sessionTimeOK and scalpGateLong
+highProbShort = baseShort and shortScore >= minScoreVIX and shortCooldownOK and (isScalpMode ? true : trendAlignmentShort) and singleTriggerShort and sessionTimeOK and scalpGateShort
+
+// Update last signal bars & side
+if highProbLong
+    lastLongSignalBar := bar_index
+    lastSide := 1
+if highProbShort
+    lastShortSignalBar := bar_index
+    lastSide := -1
+
+// === Plotting (unchanged visuals + session VWAP bands) ===
+barcolor(highlightCandles and array.includes(longBars, 0)  and barstate.isconfirmed ? color.new(color.red, 30)  : na)
+barcolor(highlightCandles and array.includes(shortBars, 0) and barstate.isconfirmed ? color.new(color.lime, 30) : na)
+plot(showCVD and barstate.isconfirmed ? cvdSmooth : na, title="CVD Smooth", color=color.new(color.blue, 0), linewidth=2)
+plot(useKeltner and barstate.isconfirmed ? upperKeltner : na, "Upper Keltner", color=color.new(color.orange, 70), linewidth=1)
+plot(useKeltner and barstate.isconfirmed ? lowerKeltner : na, "Lower Keltner", color=color.new(color.orange, 70), linewidth=1)
+plot(useKeltner and barstate.isconfirmed ? basis        : na, "Keltner Basis",  color=color.new(color.orange, 85), linewidth=1)
+plot(useSecondVWAP and barstate.isconfirmed ? vwapUpper2 : na, "VWAP Upper 2", color=color.new(color.purple, 70), linewidth=1)
+plot(useSecondVWAP and barstate.isconfirmed ? vwapLower2 : na, "VWAP Lower 2", color=color.new(color.purple, 70), linewidth=1)
+plot(nearVWAPOnly and barstate.isconfirmed ? svwapUpper  : na, "Sess VWAP Upper",  color=color.new(color.teal, 70))
+plot(nearVWAPOnly and barstate.isconfirmed ? svwapLower  : na, "Sess VWAP Lower",  color=color.new(color.teal, 70))
+plot(nearVWAPOnly and useSecondVWAP and barstate.isconfirmed ? svwapUpper2 : na, "Sess VWAP Upper2", color=color.new(color.teal, 80))
+plot(nearVWAPOnly and useSecondVWAP and barstate.isconfirmed ? svwapLower2 : na, "Sess VWAP Lower2", color=color.new(color.teal, 80))
+bgcolor(useCVDRoC and cvdRoC >  dynamic_cvd_roc_threshold and barstate.isconfirmed ? color.new(color.red, 90)   : na)
+bgcolor(useCVDRoC and cvdRoC < -dynamic_cvd_roc_threshold and barstate.isconfirmed ? color.new(color.green, 90) : na)
+plotshape(showCVDDivergence and bullish_div and bull_phase_confirmed and barstate.isconfirmed, title="CVD Bull Div", style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.normal)
+plotshape(showCVDDivergence and bearish_div and bear_phase_confirmed and barstate.isconfirmed, title="CVD Bear Div", style=shape.triangledown, location=location.abovebar,  color=color.red,   size=size.normal)
+plotchar(highProbLong  and barstate.isconfirmed,  title="High Prob Long",  char="●", location=location.belowbar, color=color.green, size=size.normal)
+plotchar(highProbShort and barstate.isconfirmed,  title="High Prob Short", char="●", location=location.abovebar,  color=color.red,   size=size.normal)
+
+// === Risk levels (unchanged, with tick option) ===
+calculate_levels(is_long)=>
+    atr_stop = useHTF ? htf_atr * 1.5 : atr * 1.5
+    if is_long
+        [low - atr_stop, close + atr_stop, close + atr_stop*2, close + atr_stop*3]
+    else
+        [high + atr_stop, close - atr_stop, close - atr_stop*2, close - atr_stop*3]
+
+
+
+
+if highProbLong and showLabels and barstate.isconfirmed
+    signalType = longLiquid ? "LIQ" : longMomentumExhaustion ? "MOM" : presetConfig + "MULTI"
+    lt = "▲ LONG \n" + signalType + "\n" + str.tostring(longScore) + "%"
+    if showDivStrength and bull_div_strength != "None"
+        lt += "\n" + bull_div_strength + " Div"
+    label.new(bar_index, low * 0.99975, text=lt, color=color.new(color.green, 90), textcolor=color.green, style=label.style_label_up, size=size.small)
+
+
+
+if highProbShort and showLabels and barstate.isconfirmed
+    signalType = shortLiquid ? "LIQ" : shortMomentumExhaustion ? "MOM" : presetConfig + "MULTI"
+    lt = "SHORT ▼\n" + signalType + "\n" + str.tostring(shortScore) + "%"
+    if showDivStrength and bear_div_strength != "None"
+        lt += "\n" + bear_div_strength + " Div"
+    label.new(bar_index, high * 1.00075, text=lt, color=color.new(color.red, 90), textcolor=color.red, style=label.style_label_down, size=size.small)
+
+// Alerts
+alertcondition(highProbLong,  title="High Probability Long",  message="Liquidation Cascade Long Signal")
+alertcondition(highProbShort, title="High Probability Short", message="Liquidation Cascade Short Signal")
+
+// Zones
+bgcolor(showZones and highProbLong  and barstate.isconfirmed ? color.new(color.green, 90) : na)
+bgcolor(showZones and highProbShort and barstate.isconfirmed ? color.new(color.red,   90) : na)
+
+// === Info Table (unchanged except using cvdLookbackActual) ===
+if showTable
+    //var table infoTable = table.new(position.bottom_left, 3, 20, bgcolor=color.new(color.black, 85), border_width=1)
+    
+    if barstate.islast and hasEnoughData
+        table.merge_cells(infoTable, 0, 0, 2, 0)
+        table.cell(infoTable, 0, 0, "LIQUIDATION DETECTOR", text_color=color.white, text_size=size.normal)
+        table.cell(infoTable, 0, 1, normalizeCVD ? "CVD%" : "CVD", text_color=color.gray)
+        cvdDisplayValue = resetCVD ? (normalizeCVD ? cvdNormalized : cvdRaw) : cvdSmooth
+        cvdFormat = normalizeCVD ? "#.##" : "#,###"
+        cvdDisplay = str.tostring(cvdDisplayValue, cvdFormat) + (normalizeCVD ? "%" : "")
+        //cvdTrend = cvdSmooth > ta.sma(cvdSmooth, cvdLookbackActual) ? 1 : -1
+        cvdTrend = cvdSmooth > cvdTrendMA ? 1 : -1
+
+        table.cell(infoTable, 1, 1, cvdDisplay, text_color=cvdTrend > 0 ? color.green : color.red)
+        table.cell(infoTable, 2, 1, cvdTrend > 0 ? "↑" : "↓", text_color=cvdTrend > 0 ? color.green : color.red)
+        table.cell(infoTable, 0, 2, "CVD Div", text_color=color.gray)
+        cvdDivText = bearish_div ? "Bear" : bullish_div ? "Bull" : "None"
+        cvdDivColor = bearish_div ? color.red : bullish_div ? color.green : color.gray
+        table.cell(infoTable, 1, 2, cvdDivText, text_color=cvdDivColor)
+        table.cell(infoTable, 2, 2, bearish_div or bullish_div ? "!" : "-", text_color=cvdDivColor)
+        table.cell(infoTable, 0, 3, "Div Str", text_color=color.gray)
+        currentDivStrength = bearish_div ? bear_div_strength : bullish_div ? bull_div_strength : "None"
+        divStrColor = currentDivStrength == "Very Strong" ? color.orange : currentDivStrength == "Strong" ? color.yellow : currentDivStrength == "Normal" ? color.white : color.gray
+        table.cell(infoTable, 1, 3, currentDivStrength, text_color=divStrColor)
+        consCount = bearish_div ? consecutive_bear_div : bullish_div ? consecutive_bull_div : 0
+        table.cell(infoTable, 2, 3, str.tostring(consCount), text_color=divStrColor)
+        table.cell(infoTable, 0, 4, "Volume", text_color=color.gray)
+        volRatio = current_volume / avgVolume
+        table.cell(infoTable, 1, 4, str.tostring(volRatio, "#.#") + "x")
+        table.cell(infoTable, 2, 4, volSpike ? "🔥" : volExhaustion ? "💤" : "•", text_color=volSpike ? color.orange : volExhaustion ? color.blue : color.gray)
+        table.cell(infoTable, 0, 5, "Ultra", text_color=color.gray)
+        table.cell(infoTable, 1, 5, use_ultra_data ? "ON" : "OFF", text_color=use_ultra_data ? color.green : color.gray)
+        table.cell(infoTable, 2, 5, market_type, text_color=color.white)
+        table.cell(infoTable, 0, 6, "RSI", text_color=color.gray)
+        table.cell(infoTable, 1, 6, str.tostring(rsi, "#"))
+        rsiColor = rsi > 70 ? color.red : rsi < 30 ? color.green : color.gray
+        table.cell(infoTable, 2, 6, rsi > 70 ? "OB" : rsi < 30 ? "OS" : "N", text_color=rsiColor)
+        table.cell(infoTable, 0, 7, "ATR", text_color=color.gray)
+        table.cell(infoTable, 1, 7, str.tostring(atr, "#.##"))
+        table.cell(infoTable, 2, 7, str.tostring((high-low)/atr, "#.#") + "x")
+        table.merge_cells(infoTable, 0, 8, 2, 8)
+        table.cell(infoTable, 0, 8, "─────────────", text_color=color.gray)
+        table.cell(infoTable, 0, 9, "Range", text_color=color.gray)
+        table.cell(infoTable, 1, 9, isLargeRange(0) ? "Large" : "Normal")
+        table.cell(infoTable, 2, 9, isLargeRange(0) ? "✓" : "✗", text_color=isLargeRange(0) ? color.green : color.gray)
+        table.cell(infoTable, 0, 10, "Pattern", text_color=color.gray)
+        patternText = longLiquid ? "Bear Liq" : shortLiquid ? "Bull Liq" : "None"
+        patternColor = longLiquid ? color.red : shortLiquid ? color.green : color.gray
+        table.cell(infoTable, 1, 10, patternText, text_color=patternColor)
+        table.cell(infoTable, 2, 10, longLiquid or shortLiquid ? "!" : "-", text_color=patternColor)
+        table.cell(infoTable, 0, 11, "Score", text_color=color.gray)
+        currentScore = longLiquid ? longScore : shortLiquid ? shortScore : 0
+        scoreColor = currentScore >= minConfirmScoreActual ? color.green : currentScore > 0 ? color.yellow : color.gray
+        table.cell(infoTable, 1, 11, str.tostring(currentScore) + "%", text_color=scoreColor)
+        table.cell(infoTable, 2, 11, currentScore >= minConfirmScoreActual ? "🎯" : currentScore > 0 ? "⚡" : "•", text_color=scoreColor)
+        table.cell(infoTable, 0, 12, "Signal", text_color=color.gray)
+        signalText = highProbLong ? "LONG" : highProbShort ? "SHORT" : "WAIT"
+        signalColor = highProbLong ? color.green : highProbShort ? color.red : color.gray
+        table.cell(infoTable, 1, 12, signalText, text_color=signalColor)
+        table.cell(infoTable, 2, 12, highProbLong ? "▲" : highProbShort ? "▼" : "•", text_color=signalColor)
+        table.cell(infoTable, 0, 13, useETH ? "ETH" : "RTH", text_color=color.gray)
+        totalSessionVol = sessionBuyVol + sessionSellVol
+        buyPressure = totalSessionVol > 0 ? (sessionBuyVol / totalSessionVol) * 100 : 50
+        sellPressure = 100 - buyPressure
+        table.cell(infoTable, 1, 13, str.tostring(buyPressure, "#") + "/" + str.tostring(sellPressure, "#"), text_color=buyPressure > 50 ? color.green : color.red)
+        table.cell(infoTable, 2, 13, buyPressure > 55 ? "B+" : buyPressure > 50 ? "B" : sellPressure > 55 ? "S+" : "S", text_color=buyPressure > 50 ? color.green : color.red)
+        table.cell(infoTable, 0, 14, "Phase", text_color=color.gray)
+        table.cell(infoTable, 1, 14, require_phase_change ? "ON" : "OFF", text_color=require_phase_change ? color.green : color.gray)
+        phaseOK = (bullish_div and bull_phase_confirmed) or (bearish_div and bear_phase_confirmed)
+        table.cell(infoTable, 2, 14, phaseOK ? "✓" : "-", text_color=phaseOK ? color.green : color.gray)
+        table.cell(infoTable, 0, 15, "CVD RoC", text_color=color.gray)
+        table.cell(infoTable, 1, 15, str.tostring(cvdRoC, "#.##"))
+        cvdRoCColor = cvdRoC > dynamic_cvd_roc_threshold ? color.red : cvdRoC < -dynamic_cvd_roc_threshold ? color.green : color.gray
+        table.cell(infoTable, 2, 15, cvdRoC > dynamic_cvd_roc_threshold ? "↑↑" : cvdRoC < -dynamic_cvd_roc_threshold ? "↓↓" : "→", text_color=cvdRoCColor)
+        table.cell(infoTable, 0, 16, "Mode", text_color=color.gray)
+        presetShort = presetConfig == "Scalping (1-5m)" ? "Scalp" : presetConfig == "Intraday (15-30m)" ? "Intra" : presetConfig == "Swing (60m+)" ? "Swing" : "Custom"
+        table.cell(infoTable, 1, 16, presetShort, text_color=color.yellow)
+        table.cell(infoTable, 2, 16, "⚙", text_color=color.yellow)
+        table.cell(infoTable, 0, 17, "HTF", text_color=color.gray)
+        htfTrendText = htf_trend == 1 ? "BULL" : htf_trend == -1 ? "BEAR" : "NEUTRAL"
+        htfTrendColor = htf_trend == 1 ? color.green : htf_trend == -1 ? color.red : color.gray
+        table.cell(infoTable, 1, 17, htfTrendText, text_color=htfTrendColor)
+        table.cell(infoTable, 2, 17, position_bias, text_color=color.white, text_size=size.tiny)
+        table.cell(infoTable, 0, 18, "Regime", text_color=color.gray)
+        regimeShort = market_regime == "trending_volatile" ? "T-Vol" : market_regime == "trending_smooth" ? "T-Sm" : market_regime == "ranging_volatile" ? "R-Vol" : "R-Tight"
+        table.cell(infoTable, 1, 18, regimeShort, text_color=color.yellow)
+        table.cell(infoTable, 2, 18, str.tostring(regime_multiplier, "#.#") + "x", text_color=color.yellow)
+        // VIX TS row
+        table.cell(infoTable, 0, 19, "VIX TS", text_color=color.gray)
+        tsText  = tsRegime == -1 ? "Backward." : tsRegime == 1 ? "Contango" : "Flat"
+        tsColor = tsRegime == -1 ? color.orange : tsRegime == 1 ? color.yellow : color.gray
+        table.cell(infoTable, 1, 19, tsText, text_color=tsColor)
+        table.cell(infoTable, 2, 19, str.tostring(tsSpread*100, "#.#") + "%", text_color=tsColor)
+        // Add dynamic threshold monitoring
+        table.cell(infoTable, 0, 20, "Dyn Thresh", text_color=color.gray)
+        table.cell(infoTable, 1, 20, str.tostring(current_threshold_multiplier, "#.##"))
+        table.cell(infoTable, 2, 20, volatility_score > 1.2 ? "HIGH" : "LOW")
+
+        // Add VIX regime display  
+        table.cell(infoTable, 0, 21, "VIX Regime", text_color=color.gray)
+        table.cell(infoTable, 1, 21, vix_risk_regime) 
+        table.cell(infoTable, 2, 21, str.tostring(vix_front_slope*100, "#.#") + "%")
