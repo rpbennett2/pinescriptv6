@@ -1,0 +1,356 @@
+//@version=6
+indicator("ES Daily Core Strategy", shorttitle="ES Core", overlay=true)
+
+// ==========================================
+// INPUT PARAMETERS
+// ==========================================
+
+// RSI Settings
+rsi_length = input.int(14, "RSI Length", minval=1)
+rsi_source = input.source(close, "RSI Source")
+
+// Structure Settings
+swing_length = input.int(8, "Swing Length for S/R", minval=5, maxval=15)
+min_touches = input.int(25, "Minimum Level Touches", minval=2, maxval=50)
+level_tolerance = input.float(0.15, "Level Tolerance %", minval=0.05, maxval=0.5) / 100
+min_level_strength = input.int(20, "Minimum Level Strength", minval=10, maxval=50)
+
+// Trend Settings
+trend_ma_length = input.int(50, "Trend MA Length", minval=20, maxval=200)
+higher_tf = input.timeframe("120", "Higher Timeframe for Trend")
+
+// Quality Filters
+min_impulse_size = input.float(10, "Minimum Impulse Size (points)", minval=5, maxval=50)
+volume_filter = input.bool(true, "Use Volume Filter")
+session_filter = input.bool(true, "RTH Session Only")
+
+// Visual Settings
+show_ltb = input.bool(true, "Show LTB Setups")
+show_fbd = input.bool(true, "Show FBD Setups")
+show_divergence = input.bool(true, "Show RSI Divergence")
+show_levels = input.bool(true, "Show Key Levels")
+show_level_strength = input.bool(true, "Show Level Strength")
+
+// Alert Settings
+enable_alerts = input.bool(false, "Enable Alerts")
+
+// ==========================================
+// SESSION FILTER
+// ==========================================
+
+is_rth = session_filter ? not na(time(timeframe.period, "0930-1600:1234567", "America/New_York")) : true
+
+// ==========================================
+// RSI CALCULATION
+// ==========================================
+
+rsi = ta.rsi(rsi_source, rsi_length)
+rsi_oversold = 40
+rsi_overbought = 60
+
+rsi_tradeable_zone = rsi >= rsi_oversold and rsi <= rsi_overbought
+rsi_weak_long = rsi < rsi_oversold
+rsi_weak_short = rsi > rsi_overbought
+
+// ==========================================
+// ENHANCED TREND IDENTIFICATION
+// ==========================================
+
+// Multiple timeframe trend analysis
+htf_close = request.security(syminfo.tickerid, higher_tf, close[1], lookahead=barmerge.lookahead_off)
+htf_high = request.security(syminfo.tickerid, higher_tf, high[1], lookahead=barmerge.lookahead_off)
+htf_low = request.security(syminfo.tickerid, higher_tf, low[1], lookahead=barmerge.lookahead_off)
+
+// Trend determination
+trend_ma = ta.ema(close, trend_ma_length)  // Changed to EMA for better responsiveness
+price_above_ma = close > trend_ma
+htf_bullish = htf_close > htf_close[2]  // Look back 2 bars for stability
+htf_bearish = htf_close < htf_close[2]
+
+// Strong trend conditions
+is_strong_uptrend = price_above_ma and htf_bullish and close > close[5]
+is_strong_downtrend = not price_above_ma and htf_bearish and close < close[5]
+
+// ==========================================
+// ENHANCED LEVEL DETECTION & SCORING
+// ==========================================
+
+// Pivot detection with larger lookback for significant levels
+pivot_high = ta.pivothigh(high, swing_length, swing_length)
+pivot_low = ta.pivotlow(low, swing_length, swing_length)
+
+// Level storage with enhanced properties
+type LevelData
+    float price
+    int touches
+    int first_touch_bar
+    int last_touch_bar
+    float strength
+    bool is_fresh
+    float max_impulse_away
+
+var resistance_levels = array.new<LevelData>()
+var support_levels = array.new<LevelData>()
+
+// Function to calculate level strength based on multiple factors
+calc_level_strength(touches, age, max_impulse) =>
+    touch_score = touches * 10
+    age_score = math.max(0, 100 - age * 0.5)  // Prefer fresher levels
+    impulse_score = math.min(max_impulse * 2, 50)  // Cap impulse contribution
+    touch_score + age_score + impulse_score
+
+// Method to update or add level
+method update_or_add_level(array<LevelData> levels, float price, bool is_resistance) =>
+    level_found = false
+    if levels.size() > 0
+        for i = 0 to levels.size() - 1
+            level = levels.get(i)
+            if math.abs(level.price - price) <= price * level_tolerance
+                // Update existing level
+                new_touches = level.touches + 1
+                age = bar_index - level.first_touch_bar
+                new_level = LevelData.new(                    price,                     new_touches,                     level.first_touch_bar,                     bar_index,                    calc_level_strength(new_touches, age, level.max_impulse_away),                    new_touches <= 2,                     level.max_impulse_away                )
+                levels.set(i, new_level)
+                level_found := true
+                break
+    
+    if not level_found
+        // Add new level
+        new_level = LevelData.new(            price,             1,             bar_index,             bar_index,            calc_level_strength(1, 0, 0),            true,            0.0        )        
+        levels.push(new_level)                
+        if levels.size() > 8
+            // Remove weakest level
+            min_strength = 999999.0
+            min_index = 0
+            for i = 0 to levels.size() - 1
+                level = levels.get(i)
+                if level.strength < min_strength
+                    min_strength := level.strength
+                    min_index := i
+            levels.remove(min_index)
+
+// Add levels when pivots are confirmed
+if not na(pivot_high) and is_rth
+    resistance_levels.update_or_add_level(pivot_high, true)
+
+if not na(pivot_low) and is_rth
+    support_levels.update_or_add_level(pivot_low, false)
+
+// Update impulse tracking for existing levels
+if resistance_levels.size() > 0
+    for i = 0 to resistance_levels.size() - 1
+        level = resistance_levels.get(i)
+        current_impulse = math.abs(close - level.price)
+        if current_impulse > level.max_impulse_away
+            updated_level = LevelData.new(                level.price, level.touches, level.first_touch_bar, level.last_touch_bar,                level.strength, level.is_fresh, current_impulse            )
+            resistance_levels.set(i, updated_level)
+
+if support_levels.size() > 0
+    for i = 0 to support_levels.size() - 1
+        level = support_levels.get(i)
+        current_impulse = math.abs(close - level.price)
+        if current_impulse > level.max_impulse_away
+            updated_level = LevelData.new(                level.price, level.touches, level.first_touch_bar, level.last_touch_bar,                level.strength, level.is_fresh, current_impulse            )
+            support_levels.set(i, updated_level)
+
+// ==========================================
+// ENHANCED DIVERGENCE DETECTION
+// ==========================================
+
+len = 5
+ph = ta.pivothigh(rsi, len, len)
+pl = ta.pivotlow(rsi, len, len)
+ph_price = ta.pivothigh(high, len, len)
+pl_price = ta.pivotlow(low, len, len)
+
+// More selective divergence detection
+bullish_div = false
+bearish_div = false
+
+if not na(pl) and not na(pl[1]) and not na(pl_price) and not na(pl_price[1])
+    if pl_price < pl_price[1] and pl > pl[1] and pl[1] < 45  // Only when RSI was actually low
+        bullish_div := true
+
+if not na(ph) and not na(ph[1]) and not na(ph_price) and not na(ph_price[1])
+    if ph_price > ph_price[1] and ph < ph[1] and ph[1] > 55  // Only when RSI was actually high
+        bearish_div := true
+
+// ==========================================
+// QUALITY LTB DETECTION
+// ==========================================
+
+// Find nearest quality levels
+get_nearest_quality_support() =>
+    nearest_level = 0.0
+    max_strength = 0.0
+    
+    if support_levels.size() > 0
+        for i = 0 to support_levels.size() - 1
+            level = support_levels.get(i)
+            if level.strength >= min_level_strength and level.touches >= min_touches
+                distance = math.abs(close - level.price)
+                if distance <= level.price * level_tolerance and level.strength > max_strength
+                    max_strength := level.strength
+                    nearest_level := level.price
+    nearest_level
+
+get_nearest_quality_resistance() =>
+    nearest_level = 0.0
+    max_strength = 0.0
+    
+    if resistance_levels.size() > 0
+        for i = 0 to resistance_levels.size() - 1
+            level = resistance_levels.get(i)
+            if level.strength >= min_level_strength and level.touches >= min_touches
+                distance = math.abs(close - level.price)
+                if distance <= level.price * level_tolerance and level.strength > max_strength
+                    max_strength := level.strength
+                    nearest_level := level.price
+    nearest_level
+
+quality_support = get_nearest_quality_support()
+quality_resistance = get_nearest_quality_resistance()
+
+// Volume filter
+avg_volume = ta.sma(volume, 20)
+volume_confirmation = not volume_filter or volume > avg_volume * 0.8
+
+// Enhanced LTB conditions
+ltb_long = quality_support > 0 and is_strong_uptrend and rsi_tradeable_zone and volume_confirmation and show_ltb and is_rth
+ltb_short = quality_resistance > 0 and is_strong_downtrend and rsi_tradeable_zone and volume_confirmation and show_ltb and is_rth
+
+// ==========================================
+// ENHANCED FBD DETECTION
+// ==========================================
+
+var float fbd_level = na
+var bool fbd_monitoring = false
+var int fbd_start_bar = 0
+var int fbd_touches_before_flush = 0
+
+// Check for flush with more stringent requirements
+fbd_flush_detected = false
+if support_levels.size() > 0
+    for i = 0 to support_levels.size() - 1
+        level = support_levels.get(i)
+        if level.touches >= 3 and level.strength >= min_level_strength  // Must be well-tested
+            if low < level.price and low[1] >= level.price and not fbd_monitoring
+                fbd_level := level.price
+                fbd_monitoring := true
+                fbd_start_bar := bar_index
+                fbd_touches_before_flush := level.touches
+                fbd_flush_detected := true
+                break
+
+// FBD reclaim with strict conditions
+fbd_reclaim = fbd_monitoring and close > fbd_level and 
+              (bar_index - fbd_start_bar) <= 5 and  // Must reclaim quickly
+              fbd_touches_before_flush >= 3 and     // Level must have been well-tested
+              volume > avg_volume * 1.2 and         // Strong volume on reclaim
+              show_fbd and is_rth
+
+// Reset FBD monitoring
+if fbd_monitoring and ((bar_index - fbd_start_bar) > 10 or fbd_reclaim)
+    fbd_monitoring := false
+    fbd_level := na
+
+// ==========================================
+// VISUAL ELEMENTS
+// ==========================================
+
+// Plot trend MA with better coloring
+ma_color = is_strong_uptrend ? color.green : is_strong_downtrend ? color.red : color.gray
+plot(trend_ma, "Trend MA", color=ma_color, linewidth=2)
+
+// Plot only quality levels with strength indication
+if show_levels and support_levels.size() > 0
+    for i = 0 to support_levels.size() - 1
+        level = support_levels.get(i)
+        if level.strength >= min_level_strength and level.touches >= min_touches
+            line_color = level.is_fresh ? color.lime : color.green
+            line_width = level.touches >= 4 ? 2 : 1
+            line.new(bar_index - 50, level.price, bar_index + 20, level.price,                     color=line_color, style=line.style_solid, width=line_width)
+            if show_level_strength
+                label.new(bar_index + 15, level.price, 
+                         str.tostring(level.touches) + "T", 
+                         color=color.green, textcolor=color.white, size=size.large, style=label.style_label_left)
+
+if show_levels and resistance_levels.size() > 0
+    for i = 0 to resistance_levels.size() - 1
+        level = resistance_levels.get(i)
+        if level.strength >= min_level_strength and level.touches >= min_touches
+            line_color = level.is_fresh ? color.orange : color.red
+            line_width = level.touches >= 4 ? 2 : 1
+            line.new(bar_index - 50, level.price, bar_index + 20, level.price,                     color=line_color, style=line.style_solid, width=line_width)
+            if show_level_strength
+                label.new(bar_index + 15, level.price, 
+                         str.tostring(level.touches) + "T", 
+                         color=color.red, textcolor=color.white, size=size.large, style=label.style_label_left)
+
+// Plot setup signals - larger and more distinctive
+plotshape(ltb_long, "LTB Long", shape.triangleup, location.belowbar, 
+          color.new(color.green, 0), size=size.large)
+plotshape(ltb_short, "LTB Short", shape.triangledown, location.abovebar, 
+          color.new(color.red, 0), size=size.large)
+plotshape(fbd_reclaim, "FBD Setup", shape.diamond, location.belowbar, 
+          color.new(color.blue, 0), size=size.large)
+
+// Enhanced divergence plotting
+plotshape(bullish_div and show_divergence, "Bull Div", shape.labelup, location.belowbar, 
+          color.lime, text="BD+", textcolor=color.black, size=size.normal)
+plotshape(bearish_div and show_divergence, "Bear Div", shape.labeldown, location.abovebar, 
+          color.orange, text="BD-", textcolor=color.black, size=size.normal)
+
+// ==========================================
+// ENHANCED STATUS TABLE
+// ==========================================
+
+var info_table = table.new(position.bottom_right, 2, 8, bgcolor=color.white, border_width=1)
+
+if barstate.islast
+    info_table.cell(0, 0, "RSI", text_color=color.black, bgcolor=color.gray)
+    rsi_color = rsi_weak_long or rsi_weak_short ? color.red : color.green
+    info_table.cell(1, 0, str.tostring(math.round(rsi, 1)), text_color=rsi_color)
+    
+    info_table.cell(0, 1, "Trend", text_color=color.black, bgcolor=color.gray)
+    trend_text = is_strong_uptrend ? "STRONG UP" : is_strong_downtrend ? "STRONG DOWN" : "WEAK/NEUTRAL"
+    trend_color = is_strong_uptrend ? color.green : is_strong_downtrend ? color.red : color.gray
+    info_table.cell(1, 1, trend_text, text_color=trend_color)
+    
+    info_table.cell(0, 2, "RSI Zone", text_color=color.black, bgcolor=color.gray)
+    rsi_zone_text = rsi_weak_long ? "WEAK LONG" : rsi_weak_short ? "WEAK SHORT" : "TRADEABLE"
+    rsi_zone_color = rsi_weak_long or rsi_weak_short ? color.red : color.green
+    info_table.cell(1, 2, rsi_zone_text, text_color=rsi_zone_color)
+    
+    info_table.cell(0, 3, "Quality Sup", text_color=color.black, bgcolor=color.gray)
+    sup_text = quality_support > 0 ? str.tostring(quality_support, "0.00") : "NONE"
+    info_table.cell(1, 3, sup_text, text_color=quality_support > 0 ? color.green : color.gray)
+    
+    info_table.cell(0, 4, "Quality Res", text_color=color.black, bgcolor=color.gray)
+    res_text = quality_resistance > 0 ? str.tostring(quality_resistance, "0.00") : "NONE"
+    info_table.cell(1, 4, res_text, text_color=quality_resistance > 0 ? color.red : color.gray)
+    
+    info_table.cell(0, 5, "LTB Long", text_color=color.black, bgcolor=color.gray)
+    info_table.cell(1, 5, ltb_long ? "ACTIVE" : "NONE", text_color=ltb_long ? color.green : color.gray)
+    
+    info_table.cell(0, 6, "LTB Short", text_color=color.black, bgcolor=color.gray)
+    info_table.cell(1, 6, ltb_short ? "ACTIVE" : "NONE", text_color=ltb_short ? color.red : color.gray)
+    
+    info_table.cell(0, 7, "FBD", text_color=color.black, bgcolor=color.gray)
+    fbd_text = fbd_monitoring ? "MONITORING" : fbd_reclaim ? "ACTIVE" : "NONE"
+    fbd_color = fbd_reclaim ? color.blue : fbd_monitoring ? color.yellow : color.gray
+    info_table.cell(1, 7, fbd_text, text_color=fbd_color)
+
+// ==========================================
+// ALERTS
+// ==========================================
+
+
+alertcondition(ltb_long and enable_alerts, "Quality LTB Long", "High-quality Level Trackback Long setup")
+alertcondition(ltb_short and enable_alerts, "Quality LTB Short", "High-quality Level Trackback Short setup") 
+alertcondition(fbd_reclaim and enable_alerts, "Quality FBD", "High-quality Failed Breakdown setup")
+alertcondition(bullish_div and enable_alerts, "Strong Bullish Divergence", "Strong bullish RSI divergence")
+alertcondition(bearish_div and enable_alerts, "Strong Bearish Divergence", "Strong bearish RSI divergence")
+
+// Subtle background for RSI zones
+bgcolor(rsi_weak_long ? color.new(color.red, 98) :         rsi_weak_short ? color.new(color.red, 98) : color.new(color.white, 100))
