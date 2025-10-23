@@ -1,5 +1,5 @@
 //@version=5
-indicator("Liquidation Cascade Detector", shorttitle = 'LCD-V3', overlay=true, dynamic_requests = true)
+indicator("Liquidation Cascade Detector v4", shorttitle = 'LCD-V4', overlay=true, dynamic_requests = true)
 
 // === Preset Configurations ===
 presetConfig = input.string("Scalping (1-5m)", "Configuration Preset", options=["Custom", "Scalping (1-5m)", "Intraday (15-30m)", "Swing (60m+)"], group="Preset Config")
@@ -299,6 +299,17 @@ f_z_ratio(num, den, n) =>
     v := f_clamp(nz(v), -0.35, 0.35)
     f_robust_z(v, n)
 
+
+
+f_dot(a, b) =>
+    a.get(0)*b.get(0) + a.get(1)*b.get(1) + a.get(2)*b.get(2) + a.get(3)*b.get(3) + a.get(4)*b.get(4) + a.get(5)*b.get(5)
+
+f_mult(arrF, k) =>
+    r = array.new<float>(array.size(arrF))
+    for i = 0 to array.size(arrF) - 1
+        array.set(r, i, arrF.get(i) * k)
+    r
+    
 calculate_pca_projection() =>
     if not enablePCA
         [0.0, 0.0, 0.0, 0, "Unknown", 1.0, 0.0]
@@ -340,18 +351,10 @@ calculate_pca_projection() =>
         var array<float> pc_prev = array.new<float>(6, 0.0)
         var bool pc_init = false
 
-        f_dot(a, b) =>
-            a.get(0)*b.get(0) + a.get(1)*b.get(1) + a.get(2)*b.get(2) +
-            a.get(3)*b.get(3) + a.get(4)*b.get(4) + a.get(5)*b.get(5)
-
         pc_now = eigVec.col(0)
         same_dir = not pc_init or (f_dot(pc_now, pc_prev) >= 0)
 
-        f_mult(arrF, k) =>
-            r = array.new<float>(array.size(arrF))
-            for i = 0 to array.size(arrF) - 1
-                array.set(r, i, arrF.get(i) * k)
-            r
+
 
         pc_aligned = same_dir ? pc_now : f_mult(pc_now, -1.0)
 
@@ -409,6 +412,8 @@ calculate_pca_projection() =>
         [proj_s, fast_ema, slow_ema, vix_regime, risk_regime, regime_adjustment, nz(m2m1, 0.0)]
 
 [pca_projection, pca_fast, pca_slow, vix_ts_regime, vix_risk_regime, vix_regime_multiplier, vix_front_slope] = calculate_pca_projection()
+vix_slope_display = enablePCA ? str.tostring(vix_front_slope*100, "#.#") + "%" : "N/A"
+
 
 // ========================================================================
 // ADAPTIVE PARAMETER APPLICATION
@@ -1205,8 +1210,7 @@ if showTable
         table.cell(infoTable, 1, 20, str.tostring(current_threshold_multiplier, "#.##"))
         table.cell(infoTable, 2, 20, volatility_score > 1.2 ? "HIGH" : "LOW")
 
-        // Add VIX regime display
+        // Add VIX regime display  
         table.cell(infoTable, 0, 21, "VIX Regime", text_color=color.gray)
-        table.cell(infoTable, 1, 21, vix_risk_regime)
-        vix_slope_display = enablePCA ? str.tostring(vix_front_slope*100, "#.#") + "%" : "N/A"
-        table.cell(infoTable, 2, 21, vix_slope_display)
+        table.cell(infoTable, 1, 21, vix_slope_display) 
+        table.cell(infoTable, 2, 21, str.tostring(vix_front_slope*100, "#.#") + "%")
