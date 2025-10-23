@@ -537,9 +537,12 @@ trendAlignmentShort = not useTrendFilter or is_uptrend   or (not strong_downtren
 // === PCA Signal Generation ===
 // Generate liquidation signals based on PCA projection
 generate_pca_signals() =>
-    if not enablePCA
-        [false, false, 0.0, 0.0]
-    else
+    bool longSignal = false
+    bool shortSignal = false
+    float strengthLong = 0.0
+    float strengthShort = 0.0
+
+    if enablePCA
         // Calculate thresholds
         sigProj = 1.0  // Normalized projection has unit variance
         effBand = math.max(0.12 * sigProj, pcaBandK * sigProj * vix_regime_multiplier)
@@ -560,10 +563,12 @@ generate_pca_signals() =>
         pca_strength = math.abs(pca_projection) / sigProj
         regime_strength = vix_regime_multiplier < 1.0 ? 1.3 : 0.8
 
-        strength_long = pca_long_signal ? (pca_strength * 0.65 + regime_strength * 0.35) : 0.0
-        strength_short = pca_short_signal ? (pca_strength * 0.65 + regime_strength * 0.35) : 0.0
+        longSignal := pca_long_signal
+        shortSignal := pca_short_signal
+        strengthLong := pca_long_signal ? (pca_strength * 0.65 + regime_strength * 0.35) : 0.0
+        strengthShort := pca_short_signal ? (pca_strength * 0.65 + regime_strength * 0.35) : 0.0
 
-        [pca_long_signal, pca_short_signal, strength_long, strength_short]
+    [longSignal, shortSignal, strengthLong, strengthShort]
 
 [pca_long, pca_short, pca_strength_long, pca_strength_short] = generate_pca_signals()
 
@@ -626,9 +631,10 @@ var int consecutive_bear_div = 0
 var int consecutive_bull_div = 0
 
 detect_bearish_cvd_divergence() =>
-    if not hasEnoughData
-        [false, 0]
-    else
+    bool divergence = false
+    int bars = 0
+
+    if hasEnoughData
         last_high_price = ta.valuewhen(high_fractal, high[fractal_periods], 0)
         prev_high_price = ta.valuewhen(high_fractal, high[fractal_periods], 1)
         last_high_cvd = ta.valuewhen(high_fractal, cvdSmooth[fractal_periods], 0)
@@ -645,12 +651,16 @@ detect_bearish_cvd_divergence() =>
         valid_data = not na(last_high_cvd) and not na(prev_high_cvd) and math.abs(prev_high_cvd) > 0
         price_sig = math.abs(price_change) > 0.5
         cvd_sig   = math.abs(cvd_change)   > 2.0
-        [price_higher and cvd_lower and valid_data and time_condition and bars_valid and price_sig and cvd_sig, bars_between]
+        divergence := price_higher and cvd_lower and valid_data and time_condition and bars_valid and price_sig and cvd_sig
+        bars := bars_between
+
+    [divergence, bars]
 
 detect_bullish_cvd_divergence() =>
-    if not hasEnoughData
-        [false, 0]
-    else
+    bool divergence = false
+    int bars = 0
+
+    if hasEnoughData
         last_low_price = ta.valuewhen(low_fractal, low[fractal_periods], 0)
         prev_low_price = ta.valuewhen(low_fractal, low[fractal_periods], 1)
         last_low_cvd = ta.valuewhen(low_fractal, cvdSmooth[fractal_periods], 0)
@@ -667,7 +677,10 @@ detect_bullish_cvd_divergence() =>
         valid_data = not na(last_low_cvd) and not na(prev_low_cvd) and math.abs(prev_low_cvd) > 0
         price_sig = math.abs(price_change) > 0.5
         cvd_sig   = math.abs(cvd_change)   > 2.0
-        [price_lower and cvd_higher and valid_data and time_condition and bars_valid and price_sig and cvd_sig, bars_between]
+        divergence := price_lower and cvd_higher and valid_data and time_condition and bars_valid and price_sig and cvd_sig
+        bars := bars_between
+
+    [divergence, bars]
 
 check_phase_change(bars_between_param, is_bullish) =>
     if not require_phase_change
@@ -771,10 +784,14 @@ cleanup_arrays() =>
         array.shift(shortBars)
 
 detectLiquidation(isLong)=>
-    if not hasEnoughData
-        [false,0,0]
-    else
-        cnt = 0.0, total = 0.0, start = 0
+    bool detected = false
+    int startBar = 0
+    int count = 0
+
+    if hasEnoughData
+        cnt = 0.0
+        total = 0.0
+        start = 0
         for i=0 to math.min(minConsecutive-1,4)
             if i < bar_index
                 cond = isLong ? (isBearish(i) or hasLongLiquidationPattern(i)) : (isBullish(i) or hasShortLiquidationPattern(i))
@@ -785,24 +802,30 @@ detectLiquidation(isLong)=>
                         start := i
                 else
                     break
-        [cnt >= minConsecutive and total > atr * dynamic_momentum_threshold, start, int(cnt)]
+        detected := cnt >= minConsecutive and total > atr * dynamic_momentum_threshold
+        startBar := start
+        count := int(cnt)
+
+    [detected, startBar, count]
 
 [longLiquid, longStart, longCount]   = detectLiquidation(true)
 [shortLiquid, shortStart, shortCount]= detectLiquidation(false)
 
 // === Stop-hunt ===
 detect_stop_hunt() =>
-    if not hasEnoughData
-        [false,false]
-    else
+    bool huntLong = false
+    bool huntShort = false
+
+    if hasEnoughData
         recent_high = ta.highest(high[1], 10)
         recent_low  = ta.lowest(low[1], 10)
         br = high-low
         uw = br>0 ? (high - math.max(open,close))/br : 0
         lw = br>0 ? (math.min(open,close) - low)/br : 0
-        shLong  = low  < recent_low  * 0.998 and close > recent_low  and lw > 0.3 and current_volume > avgVolume * 1.5
-        shShort = high > recent_high * 1.002 and close < recent_high and uw > 0.3 and current_volume > avgVolume * 1.5
-        [shLong, shShort]
+        huntLong := low  < recent_low  * 0.998 and close > recent_low  and lw > 0.3 and current_volume > avgVolume * 1.5
+        huntShort := high > recent_high * 1.002 and close < recent_high and uw > 0.3 and current_volume > avgVolume * 1.5
+
+    [huntLong, huntShort]
 
 [stopHuntLong, stopHuntShort] = detect_stop_hunt()
 
