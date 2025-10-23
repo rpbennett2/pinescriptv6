@@ -996,13 +996,13 @@ longScore  = longVolumeScore + longVWAPScore + longRSIScore + longCVDDivScore + 
 shortScore = shortVolumeScore + shortVWAPScore + shortRSIScore + shortCVDDivScore + shortCVDStrBonus + (shortMomentumExhaustion?30:0) + (shortCVDMomentumDiv?25:0) + (high>=upperKeltner?10:0) + (high>=vwapUpper2?10:0) + htfAlignmentShort + stopHuntShortBonus + regimeBonus + scalpSweepBonusShort + scalpVWAPBonusShort +pattern_score_short + (bear_structure_break?25:0) + (confluence_bear*30) +(exhaustion_pattern and high > ta.highest(high[1], 10) ? 20 : 0) + pcaShortBonus
 
 // Adjusted minimum score (lighter in Scalp)
-rawAdjMin = minConfirmScoreActual * regime_multiplier * todFactor
-adjustedMinScore = isScalpMode ? math.round(math.min(45, math.max(22, rawAdjMin - 8))) : math.round(rawAdjMin)
+float rawAdjMin = minConfirmScoreActual * regime_multiplier * todFactor
+float adjustedMinScore = isScalpMode ? math.round(math.min(45, math.max(22, rawAdjMin - 8))) : math.round(rawAdjMin)
 
 // Apply PCA regime adjustment (replaces old VIX term structure)
-enhanced_min_score_adjustment = vix_regime_multiplier * pcaWeight
-final_min_score_multiplier = 1.0 + (enhanced_min_score_adjustment - 1.0) * pcaWeight
-minScoreVIX = math.round(adjustedMinScore * final_min_score_multiplier)
+float enhanced_min_score_adjustment = vix_regime_multiplier * pcaWeight
+float final_min_score_multiplier = 1.0 + (enhanced_min_score_adjustment - 1.0) * pcaWeight
+float minScoreVIX = math.round(adjustedMinScore * final_min_score_multiplier)
 
 
 // Cooldown (opposite-side bypass stays)
