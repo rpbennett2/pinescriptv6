@@ -301,7 +301,7 @@ f_z_ratio(num, den, n) =>
 
 calculate_pca_projection() =>
     if not enablePCA
-        [0.0, 0.0, 0.0, 0, "Unknown", 1.0]
+        [0.0, 0.0, 0.0, 0, "Unknown", 1.0, 0.0]
     else
         // Fetch market internals and VIX data
         tck = request.security(symTick, pcaDataTF, close, lookahead=barmerge.lookahead_off)
@@ -406,9 +406,9 @@ calculate_pca_projection() =>
             2 => 1.25
             => 1.0
 
-        [proj_s, fast_ema, slow_ema, vix_regime, risk_regime, regime_adjustment]
+        [proj_s, fast_ema, slow_ema, vix_regime, risk_regime, regime_adjustment, nz(m2m1, 0.0)]
 
-[pca_projection, pca_fast, pca_slow, vix_ts_regime, vix_risk_regime, vix_regime_multiplier] = calculate_pca_projection()
+[pca_projection, pca_fast, pca_slow, vix_ts_regime, vix_risk_regime, vix_regime_multiplier, vix_front_slope] = calculate_pca_projection()
 
 // ========================================================================
 // ADAPTIVE PARAMETER APPLICATION
@@ -1205,7 +1205,8 @@ if showTable
         table.cell(infoTable, 1, 20, str.tostring(current_threshold_multiplier, "#.##"))
         table.cell(infoTable, 2, 20, volatility_score > 1.2 ? "HIGH" : "LOW")
 
-        // Add VIX regime display  
+        // Add VIX regime display
         table.cell(infoTable, 0, 21, "VIX Regime", text_color=color.gray)
-        table.cell(infoTable, 1, 21, vix_risk_regime) 
-        table.cell(infoTable, 2, 21, str.tostring(vix_front_slope*100, "#.#") + "%")
+        table.cell(infoTable, 1, 21, vix_risk_regime)
+        vix_slope_display = enablePCA ? str.tostring(vix_front_slope*100, "#.#") + "%" : "N/A"
+        table.cell(infoTable, 2, 21, vix_slope_display)
