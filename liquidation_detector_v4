@@ -1,9 +1,13 @@
 //@version=5
 indicator("Liquidation Cascade Detector", shorttitle = 'LCD-V3', overlay=true, dynamic_requests = true)
-//
+
 // === Preset Configurations ===
 presetConfig = input.string("Scalping (1-5m)", "Configuration Preset", options=["Custom", "Scalping (1-5m)", "Intraday (15-30m)", "Swing (60m+)"], group="Preset Config")
-//
+
+// Preset helpers
+isScalping = presetConfig == "Scalping (1-5m)"
+isIntraday = presetConfig == "Intraday (15-30m)"
+isSwing = presetConfig == "Swing (60m+)"
 
 // === DYNAMIC THRESHOLD ADAPTATION SYSTEM ===
 // Replace static thresholds with adaptive ones based on market volatility and regime
@@ -11,7 +15,6 @@ presetConfig = input.string("Scalping (1-5m)", "Configuration Preset", options=[
 // Dynamic Threshold Configuration
 groupDynamic = "Dynamic Thresholds"
 useDynamicThresholds = input.bool(true, "Enable Dynamic Thresholds", group=groupDynamic)
-//baseThresholdMultiplier = input.float(0, "Base Threshold Multiplier", minval=0, maxval=3000, step=0.1, group=groupDynamic)
 volatilityLookback = input.int(60, "Volatility Lookback Period", minval=20, maxval=500, group=groupDynamic)
 regimeAdjustment = input.bool(true, "Enable Regime-Based Adjustment", group=groupDynamic)
 adaptationSpeed = input.float(0.1, "Adaptation Speed", minval=0.01, maxval=1.0, step=0.01, group=groupDynamic)
@@ -99,10 +102,7 @@ avoidLastMinutes  = input.int(5, "Avoid Last X Minutes of Session",  minval=0, m
 
 // === Signal Management Settings ===
 minBarsBetweenSignals = input.int(10,"Min Bars Between Signals", minval=5, maxval=50, group="Signal Management")
-signalCooldownActual = presetConfig == "Scalping (1-5m)" ? 5 :
-                       presetConfig == "Intraday (15-30m)" ? 15 :
-                       presetConfig == "Swing (60m+)" ? 30 :
-                       minBarsBetweenSignals
+signalCooldownActual = isScalping ? 5 : isIntraday ? 15 : isSwing ? 30 : minBarsBetweenSignals
 
 // === Keltner Channel Settings ===
 useKeltner        = input.bool(true, "Use Keltner Channel Deviation", group="Keltner Settings")
@@ -146,12 +146,7 @@ var bool tf_is_seconds = str.endswith(timeframe.period, "S")
 var bool isScalpMode = presetConfig == "Scalping (1-5m)" or tf_is_seconds or actualTimeframeInt <= 1
 
 // Get HTF data (non-repainting)
-//htf_close = request.security(syminfo.tickerid, htf_timeframe, close, lookahead=barmerge.lookahead_off)
-//htf_ema20 = request.security(syminfo.tickerid, htf_timeframe, ta.ema(close, 20), lookahead=barmerge.lookahead_off)
-//htf_ema50 = request.security(syminfo.tickerid, htf_timeframe, ta.ema(close, 50), lookahead=barmerge.lookahead_off)
-//htf_atr   = request.security(syminfo.tickerid, htf_timeframe, ta.atr(14), lookahead=barmerge.lookahead_off)
-
-[htf_close, htf_ema20, htf_ema50, htf_atr] = request.security(syminfo.tickerid, htf_timeframe,    [close, ta.ema(close, 20), ta.ema(close, 50), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[htf_close, htf_ema20, htf_ema50, htf_atr] = request.security(syminfo.tickerid, htf_timeframe, [close, ta.ema(close, 20), ta.ema(close, 50), ta.atr(14)], lookahead=barmerge.lookahead_off)
 
 htf_trend = htf_close > htf_ema20 and htf_ema20 > htf_ema50 ? 1 : htf_close < htf_ema20 and htf_ema20 < htf_ema50 ? -1 : 0
 position_bias = htf_trend == 1 ? "Longs preferred" : htf_trend == -1 ? "Shorts preferred" : "Neutral"
@@ -166,32 +161,18 @@ showCVDDivergence = input.bool(true,  "Show CVD Divergences", group="Display Set
 showTable         = input.bool(true,  "Show Info Table", group="Display Settings")
 showDivStrength   = input.bool(true,  "Show Divergence Strength", group="Display Settings")
 
-// === Apply presets to additional parameters (OVERRIDES for Scalp) ===
-atrMultiplierActual = presetConfig == "Scalping (1-5m)" ? 0.5 :
-                      presetConfig == "Intraday (15-30m)" ? 0.6 :
-                      presetConfig == "Swing (60m+)" ? 0.8 : atrMultiplier
-
+// === Apply presets to additional parameters ===
+atrMultiplierActual = isScalping ? 0.5 : isIntraday ? 0.6 : isSwing ? 0.8 : atrMultiplier
+volumeMultiplierActual = isScalping ? 1.6 : isIntraday ? 3.0 : isSwing ? 4.0 : volumeMultiplier
+volumeExhaustMultiActual = isScalping ? 0.5 : isIntraday ? 0.7 : isSwing ? 0.9 : volumeExhaustMulti
+minConfirmScoreActual = isScalping ? 35 : isIntraday ? 45 : isSwing ? 55 : minConfirmScore
+momentumThresholdActual = isScalping ? 1.5 : isIntraday ? 2.0 : isSwing ? 3.0 : momentumThreshold
+cvdSmoothPeriod = isScalping ? 3 : isIntraday ? 7 : isSwing ? 14 : cvdSmoothing
 
 // === Bars / ATR / dynamic lookback ===
 minBarsRequired = math.max(100, math.max(lookback, math.max(volumeLookback, math.max(rsiPeriod, cvdLookback))))
 hasEnoughData = bar_index >= minBarsRequired + 50
-atr = ta.sma(ta.tr, lookback)                    
-
-// Softer vol demand in Scalp mode
-volumeMultiplierActual = presetConfig == "Scalping (1-5m)" ? 1.6 :presetConfig == "Intraday (15-30m)" ? 3.0 :presetConfig == "Swing (60m+)" ? 4.0 : volumeMultiplier
-
-volumeExhaustMultiActual = presetConfig == "Scalping (1-5m)" ? 0.5 :presetConfig == "Intraday (15-30m)" ? 0.7 :presetConfig == "Swing (60m+)" ? 0.9 : volumeExhaustMulti
-
-minConfirmScoreActual = presetConfig == "Scalping (1-5m)" ? 35 : presetConfig == "Intraday (15-30m)" ? 45 : presetConfig == "Swing (60m+)" ? 55 : minConfirmScore
-
-momentumThresholdActual = presetConfig == "Scalping (1-5m)" ? 1.5 :
-                          presetConfig == "Intraday (15-30m)" ? 2.0 :
-                          presetConfig == "Swing (60m+)" ? 3.0 : momentumThreshold
-
-// Faster CVD smoothing for Scalp
-cvdSmoothPeriod = presetConfig == "Scalping (1-5m)" ? 3 :
-                  presetConfig == "Intraday (15-30m)" ? 7 :
-                  presetConfig == "Swing (60m+)" ? 14 : cvdSmoothing
+atr = ta.sma(ta.tr, lookback)
 
 // === Ultra Volume (kept from your V3, but short-circuits for futures) ===
 // Consolidated Ultra Volume Function (OPTIMIZED)
@@ -524,44 +505,23 @@ atrBase            = nz(atrSma100, atr)              // avoid div by na/0
 atrRatio           = atrBase == 0 ? 1.0 : atr / atrBase
 atrPeriodDynamic   = timeframe.isminutes ? (timeframe.multiplier <= 5 ? 14 : timeframe.multiplier <= 30 ? 20 : 30) : 30
 cvdLookbackDynRaw  = math.round(atrPeriodDynamic * 2.5 * (1 + (atrRatio - 1) * 0.5))
-cvdLookbackDyn     = int(math.max(20, math.min(200, nz(cvdLookbackDynRaw, 50))))   // clamp + fallback
-
-cvdFromPreset      = presetConfig == "Scalping (1-5m)"    ? 30 :
-                     presetConfig == "Intraday (15-30m)"  ? 80 :
-                     presetConfig == "Swing (60m+)"       ? 200 : cvdLookback
+cvdLookbackDyn     = int(math.max(20, math.min(200, nz(cvdLookbackDynRaw, 50))))
+cvdFromPreset      = isScalping ? 30 : isIntraday ? 80 : isSwing ? 200 : cvdLookback
 
 cvdLookbackActual := use_dynamic_lookback ? cvdLookbackDyn : cvdFromPreset
 
-// Keep your previous override behavior
-if presetConfig == "Intraday (15-30m)" and (timeframe.isminutes and timeframe.multiplier <= 5)
+// Keep override behavior for intraday on low timeframes
+if isIntraday and (timeframe.isminutes and timeframe.multiplier <= 5)
     cvdLookbackActual := 40
     minConfirmScoreActual := 70
 
 // Tighten for true scalping
-if presetConfig == "Scalping (1-5m)"
+if isScalping
     cvdLookbackActual := math.max(15, math.min(cvdLookbackActual, 120))
 
 // Precompute a stable SMA for table/logic usage
 cvdTrendLen = math.max(1, int(cvdLookbackActual))
 cvdTrendMA  = ta.sma(cvdSmooth, cvdTrendLen)
-
-if use_dynamic_lookback
-    atrRatio = atr / ta.sma(atr, 100)
-    atrPeriodDynamic = (timeframe.isminutes ? (timeframe.multiplier <= 5 ? 14 : timeframe.multiplier <= 30 ? 20 : 30) : 30)
-    cvdLookbackDynamic = math.round(atrPeriodDynamic * 2.5 * (1 + (atrRatio - 1) * 0.5))
-    cvdLookbackActual := math.max(20, math.min(200, cvdLookbackDynamic))
-else
-    cvdLookbackActual := presetConfig == "Scalping (1-5m)" ? 30 : presetConfig == "Intraday (15-30m)" ? 80 : presetConfig == "Swing (60m+)" ? 200 : cvdLookback
-
-// If user chose Intraday preset but is on <=5m, keep your previous override
-presetOverride = presetConfig == "Intraday (15-30m)" and actualTimeframeInt <= 5
-if presetOverride
-    cvdLookbackActual := 40
-    minConfirmScoreActual := 70
-
-// Extra: tighten for true Scalp
-if isScalpMode
-    cvdLookbackActual := math.max(15, math.min(cvdLookbackActual, 120))
 
 // === Keltner / VWAP2 / momentum / CVD-RoC ===
 basis = ta.ema(close, keltnerLength)
@@ -807,7 +767,6 @@ stopHuntLongBonus  = stopHuntLong  ? 25 : 0
 stopHuntShortBonus = stopHuntShort ? 25 : 0
 regimeBonus = market_regime == "ranging_tight" ? 10 : market_regime == "trending_volatile" ? -10 : 0
 
-//volSpike = current_volume > avgVolume * volumeMultiplierActual
 volSpike = current_volume > avgVolume * dynamic_volume_multiplier
 volMomentum = current_volume > ta.sma(current_volume, 5)
 volQuality = volSpike and current_volume > ta.highest(current_volume[1], 20) * 0.8 and volMomentum
@@ -958,21 +917,10 @@ scalpSweepBonusShort = (sweepUp    and reclaimDown) ? 12 : 0
 scalpVWAPBonusLong   = (low  <= svwapLower2 or low  <= svwapLower) ? 8 : 0
 scalpVWAPBonusShort  = (high >= svwapUpper2 or high >= svwapUpper) ? 8 : 0
 
-
-// Totals - OLD VERSION WORKING
-//longScore  = longVolumeScore + longVWAPScore + longRSIScore + longCVDDivScore + longCVDStrBonus + (longMomentumExhaustion?30:0) + (longCVDMomentumDiv?25:0) + (low<=lowerKeltner?10:0) + (low<=vwapLower2?10:0) + htfAlignmentLong + stopHuntLongBonus + regimeBonus + scalpSweepBonusLong + scalpVWAPBonusLong
-//shortScore = shortVolumeScore + shortVWAPScore + shortRSIScore + shortCVDDivScore + shortCVDStrBonus + (shortMomentumExhaustion?30:0)+ (shortCVDMomentumDiv?25:0)+ (high>=upperKeltner?10:0)+ (high>=vwapUpper2?10:0)+ htfAlignmentShort+ stopHuntShortBonus+ regimeBonus + scalpSweepBonusShort + scalpVWAPBonusShort
-
 // Enhanced scoring with all new components
 longScore  = longVolumeScore + longVWAPScore + longRSIScore + longCVDDivScore +  longCVDStrBonus + (longMomentumExhaustion?30:0) + (longCVDMomentumDiv?25:0) + (low<=lowerKeltner?10:0) + (low<=vwapLower2?10:0) + htfAlignmentLong + stopHuntLongBonus + regimeBonus + scalpSweepBonusLong + scalpVWAPBonusLong +pattern_score_long + (bull_structure_break?25:0) + (confluence_bull*30) +(exhaustion_pattern and low < ta.lowest(low[1], 10) ? 20 : 0)
 
 shortScore = shortVolumeScore + shortVWAPScore + shortRSIScore + shortCVDDivScore + shortCVDStrBonus + (shortMomentumExhaustion?30:0) + (shortCVDMomentumDiv?25:0) + (high>=upperKeltner?10:0) + (high>=vwapUpper2?10:0) + htfAlignmentShort + stopHuntShortBonus + regimeBonus + scalpSweepBonusShort + scalpVWAPBonusShort +pattern_score_short + (bear_structure_break?25:0) + (confluence_bear*30) +(exhaustion_pattern and high > ta.highest(high[1], 10) ? 20 : 0)
-
-//removed tsScoreNudge
-//tsScoreNudge = tsRegime == -1 ? 4 : tsRegime == 1 ? -4 : 0 
-tsScoreNudge = 0
-longScore  += tsScoreNudge
-shortScore += tsScoreNudge
 
 // Adjusted minimum score (lighter in Scalp)
 rawAdjMin = minConfirmScoreActual * regime_multiplier * todFactor
@@ -1038,16 +986,14 @@ calculate_levels(is_long)=>
 
 
 if highProbLong and showLabels and barstate.isconfirmed
-    signalType = longLiquid ? "LIQ" : longMomentumExhaustion ? "MOM" : presetConfig + "MULTI"
+    signalType = longLiquid ? "LIQ" : longMomentumExhaustion ? "MOM" : "MULTI"
     lt = "▲ LONG \n" + signalType + "\n" + str.tostring(longScore) + "%"
     if showDivStrength and bull_div_strength != "None"
         lt += "\n" + bull_div_strength + " Div"
     label.new(bar_index, low * 0.99975, text=lt, color=color.new(color.green, 90), textcolor=color.green, style=label.style_label_up, size=size.small)
 
-
-
 if highProbShort and showLabels and barstate.isconfirmed
-    signalType = shortLiquid ? "LIQ" : shortMomentumExhaustion ? "MOM" : presetConfig + "MULTI"
+    signalType = shortLiquid ? "LIQ" : shortMomentumExhaustion ? "MOM" : "MULTI"
     lt = "SHORT ▼\n" + signalType + "\n" + str.tostring(shortScore) + "%"
     if showDivStrength and bear_div_strength != "None"
         lt += "\n" + bear_div_strength + " Div"
@@ -1061,10 +1007,8 @@ alertcondition(highProbShort, title="High Probability Short", message="Liquidati
 bgcolor(showZones and highProbLong  and barstate.isconfirmed ? color.new(color.green, 90) : na)
 bgcolor(showZones and highProbShort and barstate.isconfirmed ? color.new(color.red,   90) : na)
 
-// === Info Table (unchanged except using cvdLookbackActual) ===
+// === Info Table ===
 if showTable
-    //var table infoTable = table.new(position.bottom_left, 3, 20, bgcolor=color.new(color.black, 85), border_width=1)
-    
     if barstate.islast and hasEnoughData
         table.merge_cells(infoTable, 0, 0, 2, 0)
         table.cell(infoTable, 0, 0, "LIQUIDATION DETECTOR", text_color=color.white, text_size=size.normal)
@@ -1072,9 +1016,7 @@ if showTable
         cvdDisplayValue = resetCVD ? (normalizeCVD ? cvdNormalized : cvdRaw) : cvdSmooth
         cvdFormat = normalizeCVD ? "#.##" : "#,###"
         cvdDisplay = str.tostring(cvdDisplayValue, cvdFormat) + (normalizeCVD ? "%" : "")
-        //cvdTrend = cvdSmooth > ta.sma(cvdSmooth, cvdLookbackActual) ? 1 : -1
         cvdTrend = cvdSmooth > cvdTrendMA ? 1 : -1
-
         table.cell(infoTable, 1, 1, cvdDisplay, text_color=cvdTrend > 0 ? color.green : color.red)
         table.cell(infoTable, 2, 1, cvdTrend > 0 ? "↑" : "↓", text_color=cvdTrend > 0 ? color.green : color.red)
         table.cell(infoTable, 0, 2, "CVD Div", text_color=color.gray)
@@ -1137,7 +1079,7 @@ if showTable
         cvdRoCColor = cvdRoC > dynamic_cvd_roc_threshold ? color.red : cvdRoC < -dynamic_cvd_roc_threshold ? color.green : color.gray
         table.cell(infoTable, 2, 15, cvdRoC > dynamic_cvd_roc_threshold ? "↑↑" : cvdRoC < -dynamic_cvd_roc_threshold ? "↓↓" : "→", text_color=cvdRoCColor)
         table.cell(infoTable, 0, 16, "Mode", text_color=color.gray)
-        presetShort = presetConfig == "Scalping (1-5m)" ? "Scalp" : presetConfig == "Intraday (15-30m)" ? "Intra" : presetConfig == "Swing (60m+)" ? "Swing" : "Custom"
+        presetShort = isScalping ? "Scalp" : isIntraday ? "Intra" : isSwing ? "Swing" : "Custom"
         table.cell(infoTable, 1, 16, presetShort, text_color=color.yellow)
         table.cell(infoTable, 2, 16, "⚙", text_color=color.yellow)
         table.cell(infoTable, 0, 17, "HTF", text_color=color.gray)
