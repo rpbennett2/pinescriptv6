@@ -13,13 +13,12 @@ is5  = timeframe.isminutes and timeframe.multiplier == 5
 is15 = timeframe.isminutes and timeframe.multiplier == 15
 resolved = profile == "Auto" ? (is1 ? "1m" : is5 ? "5m" : is15 ? "15m" : "5m") : profile
 
-// --- Refined Selectivity controls (TIGHTER FILTERING)
-proj_smooth_len = input.int(5, "Proj Smoothing (EMA)", minval=1)  // Increased from 3
-spread_k_sigma  = input.float(0.18, "Min EMA-Spread (k·σ_proj)", step=0.01)  // Increased from 0.12
-band_extra_k    = input.float(0.15, "Extra Distance from Band (k·σ_proj)", step=0.01)  // Increased from 0.10
-N_hold          = input.int(3, "Bars to Hold Condition", minval=1, maxval=10)  // Increased from 2
-N_cool          = input.int(15, "Cooldown Bars After Flip", minval=0, maxval=200)  // Increased from 10
-useHTFConfirm   = input.bool(true, "Require 60min Trend Agreement")
+// Selectivity controls
+proj_smooth_len = input.int(5, "Proj Smoothing (EMA)", minval=1)
+spread_k_sigma  = input.float(0.18, "Min EMA-Spread (k·σ_proj)", step=0.01)
+band_extra_k    = input.float(0.15, "Extra Distance from Band (k·σ_proj)", step=0.01)
+N_hold          = input.int(3, "Bars to Hold Condition", minval=1, maxval=10)
+N_cool          = input.int(15, "Cooldown Bars After Flip", minval=0, maxval=200)
 
 // Correct TF mapping
 string _data_tf = resolved == "1m" ? "1"  : resolved == "5m" ? "5"  : "15"
@@ -39,10 +38,10 @@ regime_lookback = input.int(365, "Regime Lookback")
 w_m2m1  = input.float(1.50, "Weight: M2/M1",          step=0.1)
 w_short = input.float(0.50, "Weight: VX1 vs VIX9D",   step=0.1)
 
-// Band: base k, min floor, smoother regime scaling (TIGHTER BANDS)
+// Band settings
 sigLen   = input.int(100, "Sigma Len (proj)")
-bandK    = input.float(0.25, "Base No-Trade Band (k·σ)", step=0.01)  // Increased from 0.20
-bandMin  = input.float(0.12, "Band Floor (k·σ min)",     step=0.01)  // Increased from 0.08
+bandK    = input.float(0.25, "Base No-Trade Band (k·σ)", step=0.01)
+bandMin  = input.float(0.12, "Band Floor (k·σ min)",     step=0.01)
 rthOnly  = input.bool(true, "Only trade RTH (0630–1500 CT)")
 m3_mode  = input.string("Manual", "M3 Source", options = ["Manual","VIX3M Proxy","Off"])
 
@@ -57,85 +56,57 @@ symVIX    = input.symbol("CBOE:VIX",   "VIX")
 symVIX3M  = input.symbol("CBOE:VIX3M", "VIX3M")
 symVIX9D  = input.symbol("CBOE:VIX9D", "VIX9D")
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// REFINED CVD CALCULATION - MUCH MORE SELECTIVE
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// CVD Configuration (MORE CONSERVATIVE SETTINGS)
+// CVD Configuration
 groupCVD = "CVD Volume Analysis"
 enableCVD = input.bool(true, "Enable CVD Analysis", group=groupCVD)
-cvdSmoothPeriod = input.int(8, "CVD Smoothing Period", minval=1, maxval=20, group=groupCVD)  // Increased from 5
-cvdDivThreshold = input.float(2.0, "CVD Divergence Threshold (ATR)", minval=0.5, step=0.1, group=groupCVD)  // Increased from 1.2
-cvdWeight = input.float(0.20, "CVD Signal Weight", minval=0.0, maxval=1.0, step=0.05, group=groupCVD)  // Reduced from 0.25
-cvdMinBars = input.int(15, "Min Bars Between CVD Signals", minval=5, maxval=50, group=groupCVD)  // NEW: Cooldown for CVD
+cvdSmoothPeriod = input.int(8, "CVD Smoothing Period", minval=1, maxval=20, group=groupCVD)
+cvdDivThreshold = input.float(2.0, "CVD Divergence Threshold (ATR)", minval=0.5, step=0.1, group=groupCVD)
+cvdWeight = input.float(0.20, "CVD Signal Weight", minval=0.0, maxval=1.0, step=0.05, group=groupCVD)
+cvdMinBars = input.int(15, "Min Bars Between CVD Signals", minval=5, maxval=50, group=groupCVD)
 
-// CVD timeframe settings based on chart resolution
+// CVD timeframe settings
 cvdLowerTF = "1"
-cvdCumulativePeriod = "D"  // Daily cumulative period (resets each trading day)
-
-// Use native TradingView volume delta function
-// Request native CVD from lower timeframe with daily reset
-// Assign each value separately (no tuple unpacking in Pine Script)
+cvdCumulativePeriod = "D"
 [vd_open, vd_high, vd_low, vd_current] =  ta.requestVolumeDelta(cvdLowerTF, cvdCumulativePeriod)
-
-// Use the current CVD value (cumulative within the day)
 cvdRaw = vd_current
-
-// Normalize CVD by average volume to prevent scaling issues
 avg_volume = ta.sma(volume, 50)
 cvdNormalized = avg_volume > 0 ? cvdRaw / avg_volume : 0.0
-
-// Safety: clamp extreme values for display
 cvdClamped = math.max(math.min(cvdNormalized, 1000.0), -1000.0)
-
-// Smooth CVD and calculate momentum
 cvdSmooth = ta.ema(cvdClamped, cvdSmoothPeriod)
 cvdMomentum = ta.roc(cvdSmooth, 10)
 cvdAtr = math.max(ta.stdev(cvdSmooth, 14), 0.1)
 
-
-// MUCH MORE SELECTIVE CVD Divergence Detection
+// CVD Divergence Detection
 var int lastCvdBullBar = 0
 var int lastCvdBearBar = 0
 
 detect_cvd_divergence() =>
-    // Only check for divergences if enough bars have passed
     cvd_cooldown_ok = bar_index - math.max(lastCvdBullBar, lastCvdBearBar) >= cvdMinBars
-    
+
     if not cvd_cooldown_ok
         [false, false]
     else
-        // More stringent divergence requirements
-        lookback_bars = 20  // Increased lookback
-        
-        // Bullish divergence: significant price decline + CVD improvement
+        lookback_bars = 20
         price_decline = (low - ta.lowest(low[1], lookback_bars)) / ta.lowest(low[1], lookback_bars)
         cvd_improvement = (cvdSmooth - ta.lowest(cvdSmooth[1], lookback_bars)) / math.abs(ta.lowest(cvdSmooth[1], lookback_bars))
-        
-        // Bearish divergence: significant price rise + CVD deterioration  
         price_rise = (high - ta.highest(high[1], lookback_bars)) / ta.highest(high[1], lookback_bars)
         cvd_deterioration = (ta.highest(cvdSmooth[1], lookback_bars) - cvdSmooth) / math.abs(ta.highest(cvdSmooth[1], lookback_bars))
-        
-        // MUCH STRICTER THRESHOLDS
+
         bullish_div = price_decline < -0.02 and cvd_improvement > 0.15 and math.abs(cvdMomentum) > cvdDivThreshold
         bearish_div = price_rise > 0.02 and cvd_deterioration > 0.15 and math.abs(cvdMomentum) > cvdDivThreshold
-        
+
         [bullish_div, bearish_div]
 
 [cvd_bull_div_raw, cvd_bear_div_raw] = detect_cvd_divergence()
 
-// Update last divergence bars
 if cvd_bull_div_raw
     lastCvdBullBar := bar_index
-if cvd_bear_div_raw  
+if cvd_bear_div_raw
     lastCvdBearBar := bar_index
 
-// Final CVD signals (only when confirmed)
 cvd_bull_div = cvd_bull_div_raw
 cvd_bear_div = cvd_bear_div_raw
-
-// CVD Signal Strength (normalized by ATR) - MORE CONSERVATIVE
-cvd_signal_strength = enableCVD ? math.min(math.abs(cvdMomentum) / cvdAtr, 2.0) : 0.0  // Capped at 2.0
+cvd_signal_strength = enableCVD ? math.min(math.abs(cvdMomentum) / cvdAtr, 2.0) : 0.0
 
 // ── Fetch original data
 tck  = request.security(symTick, data_tf, close)
@@ -215,101 +186,57 @@ slow   = ta.ema(proj_s, slow_len)
 // If you normalize, σ(proj_n) ≈ 1 → replace sigProj with 1 for thresholds:
 sigProj = 1.0
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// DYNAMIC THRESHOLD ADAPTATION SYSTEM (SLIGHTLY MORE CONSERVATIVE)
-// ═══════════════════════════════════════════════════════════════════════════════
-
 // Dynamic Threshold Configuration
 groupDynamic = "Dynamic Thresholds"
 useDynamicThresholds = input.bool(true, "Enable Dynamic Thresholds", group=groupDynamic)
-baseThresholdMultiplier = input.float(1.1, "Base Threshold Multiplier", minval=0.5, maxval=2.0, step=0.1, group=groupDynamic)  // Increased from 1.0
-volatilityLookback = input.int(75, "Volatility Lookback", minval=20, maxval=200, group=groupDynamic)  // Increased from 50
-adaptationSpeed = input.float(0.08, "Adaptation Speed", minval=0.01, maxval=0.5, step=0.01, group=groupDynamic)  // Reduced from 0.1
+baseThresholdMultiplier = input.float(1.1, "Base Threshold Multiplier", minval=0.5, maxval=2.0, step=0.1, group=groupDynamic)
+volatilityLookback = input.int(75, "Volatility Lookback", minval=20, maxval=200, group=groupDynamic)
+adaptationSpeed = input.float(0.08, "Adaptation Speed", minval=0.01, maxval=0.5, step=0.01, group=groupDynamic)
 
 // Volatility-based threshold calculation
 calculate_dynamic_thresholds() =>
-    // Base volatility measures
-    //atr_volatility = ta.atr(14)
     proj_volatility = ta.stdev(proj_s, volatilityLookback)
-    
-    // Normalize volatilities
-    //atr_normalized = atr_volatility / ta.sma(atr_volatility, volatilityLookback)
-    //proj_vol_normalized = proj_volatility / ta.sma(proj_volatility, volatilityLookback)
-    // Safe normalization with fallback
+
     proj_vol_sma = ta.sma(proj_volatility, volatilityLookback)
     proj_vol_normalized = proj_vol_sma > 0 ? proj_volatility / proj_vol_sma : 1.0
-    
-    // Time-of-day adjustment (higher thresholds during open/close)
+
     hour_adjustment = switch hour
-        9 => 1.3   // Market open
-        10 => 1.15  // Early session
-        15 => 1.2  // Late session  
-        16 => 1.4  // Market close
-        => 1.0     // Regular hours
-    
-    // Final dynamic threshold multiplier with safety check
+        9 => 1.3
+        10 => 1.15
+        15 => 1.2
+        16 => 1.4
+        => 1.0
+
     dynamic_factor = proj_vol_normalized * hour_adjustment
     result = baseThresholdMultiplier * dynamic_factor
-    
-    // Ensure we never return NaN
     na(result) ? baseThresholdMultiplier : result
  
 
-// Adaptive threshold variables with exponential smoothing
-var float adaptive_band_threshold = 0.20   // Higher starting point
-var float adaptive_spread_threshold = 0.15  // Higher starting point
-
+var float adaptive_band_threshold = 0.20
+var float adaptive_spread_threshold = 0.15
 current_threshold_multiplier = calculate_dynamic_thresholds()
 
 if useDynamicThresholds
-    // Smooth adaptation to prevent whipsawing
-    target_band = current_threshold_multiplier * 0.20    // Higher base
-    target_spread = current_threshold_multiplier * 0.15  // Higher base
-    
+    target_band = current_threshold_multiplier * 0.20
+    target_spread = current_threshold_multiplier * 0.15
+
     adaptive_band_threshold := adaptive_band_threshold + (target_band - adaptive_band_threshold) * adaptationSpeed
     adaptive_spread_threshold := adaptive_spread_threshold + (target_spread - adaptive_spread_threshold) * adaptationSpeed
 else
-    // Use static thresholds
     adaptive_band_threshold := bandK
     adaptive_spread_threshold := spread_k_sigma
-
-// ── Filters
-// --- Smooth projection more before EMAs
-//proj_s = ta.ema(proj, proj_smooth_len)
-
-// Trend filters on projection
-//fast = ta.ema(proj_s, fast_len)
-//slow = ta.ema(proj_s, slow_len)
- 
-// ── Non-repainting HTF trends - FIXED
-// Remove the _sec_confirm function entirely
-// Use direct requests like the working version:
-fast_30 = request.security(syminfo.tickerid, "30", fast[1])
-slow_30 = request.security(syminfo.tickerid, "30", slow[1])
-fast_60 = request.security(syminfo.tickerid, "60", fast[1])
-slow_60 = request.security(syminfo.tickerid, "60", slow[1])
-fast_240 = request.security(syminfo.tickerid, "240", fast[1])
-slow_240 = request.security(syminfo.tickerid, "240", slow[1])
-fast_D = request.security(syminfo.tickerid, "D", fast[1])
-slow_D = request.security(syminfo.tickerid, "D", slow[1])
-
-//trend30m = f_trend(fast, slow_30)
-//trend1h = f_trend(fast_60, slow_60)
-//trend4h = f_trend(fast_240, slow_240)
-//trendD = f_trend(fast_D, slow_D)
 
 // steadier regime scaling: EMA( conc, 50 ) and clamp
 totVar = array.sum(eigVal)
 conc   = totVar > 0 ? eigVal.get(0)/totVar : na
 conc_s = ta.ema(conc, 50)
-//sigProj = ta.stdev(proj, sigLen)
-effK    = f_clamp(bandK * (1 - nz(conc_s)), 0.6*bandK, bandK)  // Higher minimum floor
+effK    = f_clamp(bandK * (1 - nz(conc_s)), 0.6*bandK, bandK)
 
-// RTH gate (0830–1500 CT)
+// RTH gate
 f_inSession(sess) => not na(time(timeframe.period, sess))
 inRTH = (not rthOnly) or f_inSession("0630-1500:1234567")
 
-// ── Term-structure calculations (for VIX regime analysis)
+// Term-structure calculations
 f_pct(x) => na(x) ? "n/a" : str.tostring(math.round(x * 10000.0) / 100.0) + "%"
 m2m1 = na(vx1) or na(vx2) ? na : (vx2 / vx1 - 1.0)
 m3m1 = m3_mode == "Manual"  ? (na(vx3) or na(vx1) ? na : (vx3 / vx1 - 1.0))
@@ -318,54 +245,41 @@ shortSlope = na(vx1) or na(v9d) ? na : (vx1 / v9d - 1.0)
 tsLabel = na(m2m1) ? "n/a" : m2m1 > 0 ? "Contango" : m2m1 < 0 ? "Backwardation" : "Flat"
 tsColor = na(m2m1) ? color.gray : m2m1 > 0 ? color.new(color.green, 0) : color.new(color.red, 0)
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ENHANCED VIX REGIME FILTERING (SLIGHTLY MORE CONSERVATIVE)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Enhanced VIX Regime Configuration  
+// Enhanced VIX Regime Configuration
 groupVixEnhanced = "Enhanced VIX Regime"
 useEnhancedVixFiltering = input.bool(true, "Enable Enhanced VIX Filtering", group=groupVixEnhanced)
-vixRegimeWeight = input.float(0.12, "VIX Regime Signal Weight", minval=0.0, maxval=0.5, step=0.01, group=groupVixEnhanced)  // Reduced from 0.15
-
-// Enhanced VIX regime analysis (building on existing m2m1, m3m1 calculations)
+vixRegimeWeight = input.float(0.12, "VIX Regime Signal Weight", minval=0.0, maxval=0.5, step=0.01, group=groupVixEnhanced)
 analyze_vix_regime() =>
     if not useEnhancedVixFiltering or na(m2m1)
         [0, "Unknown", 1.0]
     else
-        // Multiple slope analysis for curve shape
-        front_slope = m2m1  // Already calculated: (vx2/vx1 - 1.0)
-        back_slope = na(m3m1) ? 0.0 : m3m1  // M3/M1 slope if available
-        
-        // Curve shape classification (MORE CONSERVATIVE THRESHOLDS)
-        steep_threshold = 0.06  // Increased from 0.05
-        flat_threshold = 0.015  // Increased from 0.01
-        
-        // VIX regime classification (-2 to +2 scale)
+        front_slope = m2m1
+        steep_threshold = 0.06
+        flat_threshold = 0.015
+
         vix_regime = switch
-            front_slope < -steep_threshold => -2    // Deep backwardation (crisis)
-            front_slope < -flat_threshold => -1     // Backwardation (stress)
-            front_slope > steep_threshold => 2      // Steep contango (complacent)  
-            front_slope > flat_threshold => 1       // Contango (elevated)
-            => 0                                     // Flat (normal)
-        
-        // Risk regime text classification
+            front_slope < -steep_threshold => -2
+            front_slope < -flat_threshold => -1
+            front_slope > steep_threshold => 2
+            front_slope > flat_threshold => 1
+            => 0
+
         risk_regime = switch vix_regime
             -2 => "Crisis"
             -1 => "Stress"
-            0 => "Normal" 
+            0 => "Normal"
             1 => "Elevated"
             2 => "Complacent"
             => "Unknown"
-        
-        // Signal adjustment factor (LESS AGGRESSIVE ADJUSTMENTS)
+
         regime_adjustment = switch vix_regime
-            -2 => 0.7      // Easier signals in crisis (70% vs 60% before)
-            -1 => 0.85     // Easier signals in stress (85% vs 80% before)
-            0 => 1.0       // Standard thresholds in normal conditions
-            1 => 1.15      // Slightly harder signals when elevated (115% vs 120% before)
-            2 => 1.25      // Harder signals when complacent (125% vs 140% before)
+            -2 => 0.7
+            -1 => 0.85
+            0 => 1.0
+            1 => 1.15
+            2 => 1.25
             => 1.0
-        
+
         [vix_regime, risk_regime, regime_adjustment]
 
 [vix_ts_regime, vix_risk_regime, vix_regime_multiplier] = analyze_vix_regime()
@@ -374,71 +288,34 @@ analyze_vix_regime() =>
 enhanced_band_threshold = adaptive_band_threshold * vix_regime_multiplier
 enhanced_spread_threshold = adaptive_spread_threshold * vix_regime_multiplier
 
-// ═══════════════════════════════════════════════════════════════════════════════  
-// REFINED SIGNAL LOGIC - MUCH MORE SELECTIVE
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Apply enhanced thresholds instead of static ones
 effBand = math.max(bandMin*sigProj, enhanced_band_threshold*sigProj)
 min_spread = enhanced_spread_threshold * sigProj
 band_extra = band_extra_k * sigProj
 
-// --- Hysteresis margins (WIDER MARGINS)
 farAbove  = proj_s >  (effBand + band_extra)
 farBelow  = proj_s < -(effBand + band_extra)
 spreadUp  = (fast - slow) >  min_spread
 spreadDn  = (slow - fast) >  min_spread
 
-// MUCH MORE SELECTIVE CVD confirmation
-//cvd_confirmation_long = not enableCVD or (cvd_bull_div and cvdMomentum > cvdDivThreshold * 1.5)  // Stricter requirement
-//cvd_confirmation_short = not enableCVD or (cvd_bear_div and cvdMomentum < -cvdDivThreshold * 1.5)  // Stricter requirement
-
-// BALANCED CVD confirmation - supportive, not blocking
-cvd_confirmation_long = not enableCVD or  (cvd_bull_div or cvdMomentum > 0.5 or cvdSmooth > ta.ema(cvdSmooth, 20))
-
-cvd_confirmation_short = not enableCVD or  (cvd_bear_div or cvdMomentum < -0.5 or cvdSmooth < ta.ema(cvdSmooth, 20))
-
-// OR make it even simpler - CVD adds strength but doesn't block signals:
 cvd_supportive_long = not enableCVD or cvdMomentum >= 0.0
 cvd_supportive_short = not enableCVD or cvdMomentum <= 0.0
 
-// Enhanced signal logic
 wantLong = inRTH and farAbove and spreadUp and cvd_supportive_long
 wantShort= inRTH and farBelow and spreadDn and cvd_supportive_short
 
+// Signal strength calculation
+pca_strength = math.abs(proj_s) / sigProj
+cvd_strength = enableCVD ? math.min(cvd_signal_strength, 1.5) : 0.5
+regime_strength = vix_regime_multiplier < 1.0 ? 1.3 : 0.8
+signal_strength = pca_strength * 0.65 + cvd_strength * cvdWeight + regime_strength * vixRegimeWeight
 
+signal_strength_long = wantLong ? signal_strength : 0.0
+signal_strength_short = wantShort ? signal_strength : 0.0
 
-// REQUIRE BOTH HTF AND DAILY ALIGNMENT for higher confidence
-//htfOK_Long  = not useHTFConfirm or (trend1h == "Up" and trendD != "Down")
-//htfOK_Short = not useHTFConfirm or (trend1h == "Down" and trendD != "Up")
-
-// Enhanced signal logic with stricter CVD confirmation
-//wantLong = inRTH and farAbove and spreadUp and htfOK_Long and cvd_confirmation_long
-//wantLong = inRTH and farAbove and spreadUp and cvd_confirmation_long
-//wantShort= inRTH and farBelow and spreadDn and htfOK_Short and cvd_confirmation_short
-//wantShort= inRTH and farBelow and spreadDn and cvd_confirmation_short
-
-// Signal strength calculation (for future position sizing)
-signal_strength_long = 0.0
-signal_strength_short = 0.0
-
-if wantLong
-    pca_strength = math.abs(proj_s) / sigProj
-    cvd_strength = enableCVD ? math.min(cvd_signal_strength, 1.5) : 0.5  // Cap CVD influence
-    regime_strength = vix_regime_multiplier < 1.0 ? 1.3 : 0.8  // Reduced from 1.5/0.7
-    signal_strength_long := (pca_strength * 0.65 + cvd_strength * cvdWeight + regime_strength * vixRegimeWeight)
-
-if wantShort  
-    pca_strength = math.abs(proj_s) / sigProj
-    cvd_strength = enableCVD ? math.min(cvd_signal_strength, 1.5) : 0.5  // Cap CVD influence
-    regime_strength = vix_regime_multiplier < 1.0 ? 1.3 : 0.8  // Reduced from 1.5/0.7
-    signal_strength_short := (pca_strength * 0.65 + cvd_strength * cvdWeight + regime_strength * vixRegimeWeight)
-
-// --- Debounce + cooldown (LONGER COOLDOWNS)
 var int holdUp   = 0
 var int holdDn   = 0
 var int cooldown = 0
-var int dir      = 0     // +1 long, -1 short, 0 neutral
+var int dir      = 0
 
 holdUp  := wantLong  ? math.min(holdUp + 1, 1000) : 0
 holdDn  := wantShort ? math.min(holdDn + 1, 1000) : 0
@@ -454,41 +331,23 @@ else if flipShort
     dir := -1
     cooldown := N_cool
 
-// "OK" states for plotting/alerts (edge-triggered by flips)
 longEvent  = flipLong
 shortEvent = flipShort
-
-// Continuous state
 inLong = dir == 1
 inShort= dir == -1
-
-// Define inBand: Are we inside the no-trade (neutral) band?
 inBand = math.abs(proj_s) <= effBand
 
-// And make sure all signal logic uses proj_n consistently:
-//farAbove = proj_s > (effBand + band_extra)
-//farBelow = proj_s < -(effBand + band_extra)
-
-// Update these conditions to use normalized values:
-longOK  = inRTH and not inBand and fast > slow and proj_s > 0
-shortOK = inRTH and not inBand and fast < slow and proj_s < 0
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// DEBUG TABLE - LEFT SIDE
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// Debug Table
 showDebugTable = input.bool(true, "Show Debug Table", group="Display Settings")
 var debugTable = table.new(position.middle_left, 2, 30, border_width=1, frame_color=color.new(color.yellow, 50))
 
 if barstate.islast and showDebugTable
     row = 0
-    
-    // Header
+
     table.cell(debugTable, 0, row, "DEBUG VARIABLE", text_color=color.yellow, bgcolor=color.new(color.black,0))
     table.cell(debugTable, 1, row, "VALUE", text_color=color.yellow, bgcolor=color.new(color.black,0))
     row += 1
-    
-    // === PROJECTION VALUES ===
+
     table.cell(debugTable, 0, row, "--- PROJECTIONS ---", text_color=color.black, bgcolor=color.new(color.lime,0))
     table.cell(debugTable, 1, row, "", bgcolor=color.new(color.lime,0))
     row += 1
@@ -512,8 +371,7 @@ if barstate.islast and showDebugTable
     table.cell(debugTable, 0, row, "slow", text_color=color.white)
     table.cell(debugTable, 1, row, str.tostring(slow, "#.####"), text_color=color.white)
     row += 1
-    
-    // === SIGMA/BAND VALUES ===
+
     table.cell(debugTable, 0, row, "--- SIGMA/BANDS ---", text_color=color.black, bgcolor=color.new(color.aqua,0))
     table.cell(debugTable, 1, row, "", bgcolor=color.new(color.aqua,0))
     row += 1
@@ -537,8 +395,7 @@ if barstate.islast and showDebugTable
     table.cell(debugTable, 0, row, "effBand", text_color=color.white)
     table.cell(debugTable, 1, row, str.tostring(effBand, "#.####"), text_color=color.white)
     row += 1
-    
-    // === DYNAMIC THRESHOLDS ===
+
     table.cell(debugTable, 0, row, "--- DYNAMIC THRESH ---", text_color=color.black, bgcolor=color.new(color.orange,0))
     table.cell(debugTable, 1, row, "", bgcolor=color.new(color.orange,0))
     row += 1
@@ -566,8 +423,7 @@ if barstate.islast and showDebugTable
     table.cell(debugTable, 0, row, "enhanced_spread_thresh", text_color=color.white)
     table.cell(debugTable, 1, row, str.tostring(enhanced_spread_threshold, "#.####"), text_color=color.white)
     row += 1
-    
-    // === SIGNAL CONDITIONS ===
+
     table.cell(debugTable, 0, row, "--- SIGNALS ---", text_color=color.black, bgcolor=color.new(color.purple,0))
     table.cell(debugTable, 1, row, "", bgcolor=color.new(color.purple,0))
     row += 1
@@ -608,45 +464,34 @@ if barstate.islast and showDebugTable
     table.cell(debugTable, 1, row, str.tostring(shortEvent), text_color=shortEvent ? color.red : color.gray)
     row += 1
 
-// ── Markers (REFINED - LESS CLUTTER)
-showMarkers = input.bool(true, "Show Signal Markers")  // Enabled by default but cleaned up
-showCVDMarkers = input.bool(false, "Show CVD Divergence Markers")  // Separate control for CVD markers
-
-// Main signal markers (cleaner)
+// Markers
+showMarkers = input.bool(true, "Show Signal Markers")
+showCVDMarkers = input.bool(false, "Show CVD Divergence Markers")
 plotshape(showMarkers and longEvent,  title="Long",  style=shape.triangleup,   location=location.bottom, color=color.white, size=size.normal)
 plotshape(showMarkers and shortEvent, title="Short", style=shape.triangledown, location=location.top,    color=#ceb70b,     size=size.normal)
-
-// CVD markers (optional, off by default)
-plotshape(showCVDMarkers and enableCVD and cvd_bull_div, title="CVD Bull Div", style=shape.circle, 
+plotshape(showCVDMarkers and enableCVD and cvd_bull_div, title="CVD Bull Div", style=shape.circle,
           location=location.bottom, color=color.lime, size=size.tiny, text="CVD+")
-plotshape(showCVDMarkers and enableCVD and cvd_bear_div, title="CVD Bear Div", style=shape.circle, 
+plotshape(showCVDMarkers and enableCVD and cvd_bear_div, title="CVD Bear Div", style=shape.circle,
           location=location.top, color=color.red, size=size.tiny, text="CVD-")
 
-// ── Alerts (fire only on main flips)
+// Alerts
 alertcondition(longEvent,  "Enhanced Long",  "PCA-BC Enhanced long signal")
 alertcondition(shortEvent, "Enhanced Short", "PCA-BC Enhanced short signal")
 
-// ── Plots
 pFast = plot(fast, title="Fast", color=color.white)
 pSlow = plot(slow, title="Slow", color=#ceb70b)
 fill(pFast, pSlow, fast > slow ? color.white : #ceb70b)
 hline(0, "Zero", color=color.gray)
-
-// ── Regime info
 avgConc = ta.sma(conc, regime_lookback)
 bgcolor(conc > avgConc ? color.new(#8236FD, 80) : color.new(#0E0741, 80))
 
-// Enhanced background coloring for VIX regime (MORE SUBTLE)
 regime_bg_color = switch vix_ts_regime
-    -2 => color.new(color.red, 97)     // Crisis - very subtle red tint
-    -1 => color.new(color.orange, 97)  // Stress - very subtle orange tint
-    1 => color.new(color.yellow, 97)   // Elevated - very subtle yellow tint  
-    2 => color.new(color.purple, 97)   // Complacent - very subtle purple tint
-    => na                               // Normal - no extra coloring
-
+    -2 => color.new(color.red, 97)
+    -1 => color.new(color.orange, 97)
+    1 => color.new(color.yellow, 97)
+    2 => color.new(color.purple, 97)
+    => na
 bgcolor(useEnhancedVixFiltering ? regime_bg_color : na, title="VIX Regime Background")
- 
-// Dynamic threshold bands (for debugging)
 show_dynamic_bands = input.bool(false, "Show Dynamic Threshold Bands", group=groupDynamic)
 plot(show_dynamic_bands ? math.max(math.min(enhanced_band_threshold * sigProj,6),-6) : na, title="Dynamic Upper Band", 
      color=color.new(color.blue, 70), linewidth=1)
@@ -670,7 +515,7 @@ shortCtx = na(shortSlope) ? "n/a" : shortSlope > flat_th ? "VX1 > VIX9D (elevate
 curveShape = na(m2m1) or na(m3m1) ? "n/a" : (m2m1 > flat_th and m3m1 > m2m1 + flat_th) ? "Upward-sloping (steepening)" : (m2m1 > flat_th and m3m1 > flat_th and m3m1 < m2m1 - flat_th) ? "Contango, flattening" : (m2m1 < -flat_th and m3m1 > flat_th) ? "Front inversion only" : (m2m1 < -flat_th and m3m1 < -flat_th) ? "Inverted (backwardation)" : "Flat / transition"
 
 // Enhanced Table with refined metrics
-var t = table.new(position.top_right, 2, 18, border_width=1, frame_color=color.new(color.white, 50))
+var t = table.new(position.top_right, 2, 16, border_width=1, frame_color=color.new(color.white, 50))
 if barstate.islast and showTable
     table.cell(t,0,0,"Key",   text_color=color.yellow, bgcolor=color.new(color.black,0))
     table.cell(t,1,0,"Value", text_color=color.yellow, bgcolor=color.new(color.black,0))
@@ -688,54 +533,41 @@ if barstate.islast and showTable
     table.cell(t,1,6,f_pct(m3m1), text_color=color.white)
     table.cell(t,0,7,"VX1 vs VIX9D", text_color=color.black,bgcolor=color.new(color.white,0))
     table.cell(t,1,7,f_pct(shortSlope), text_color=color.white)
-  //  table.cell(t,0,8,"HTF Trend (30m / 1H / 4H / D)", text_color=color.black,bgcolor=color.new(color.white,0))
-  //  table.cell(t,1,8,trend30m+" / "+trend1h+" / "+trend4h+" / "+trendD, bgcolor=tsColor, text_color=color.blue)
-    table.cell(t,0,9,"Curve Shape", text_color=color.black,bgcolor=color.new(color.white,0))
-    table.cell(t,1,9,curveShape, text_color=color.blue, bgcolor=tsColor)
-    table.cell(t,0,10,"Front Slope Context", text_color=color.black,bgcolor=color.new(color.white,0))
-    table.cell(t,1,10,frontCtx, text_color=color.white)
-    table.cell(t,0,11,"Back Slope Context", text_color=color.black,bgcolor=color.new(color.white,0))
-    table.cell(t,1,11,backCtx, text_color=color.white)
-    table.cell(t,0,12,"Short-End Context", text_color=color.black,bgcolor=color.new(color.white,0))
-    table.cell(t,1,12,shortCtx, text_color=color.white)
+    table.cell(t,0,8,"Curve Shape", text_color=color.black,bgcolor=color.new(color.white,0))
+    table.cell(t,1,8,curveShape, text_color=color.blue, bgcolor=tsColor)
+    table.cell(t,0,9,"Front Slope Context", text_color=color.black,bgcolor=color.new(color.white,0))
+    table.cell(t,1,9,frontCtx, text_color=color.white)
+    table.cell(t,0,10,"Back Slope Context", text_color=color.black,bgcolor=color.new(color.white,0))
+    table.cell(t,1,10,backCtx, text_color=color.white)
+    table.cell(t,0,11,"Short-End Context", text_color=color.black,bgcolor=color.new(color.white,0))
+    table.cell(t,1,11,shortCtx, text_color=color.white)
     
-    // REFINED TABLE ROWS:
-    
-    // CVD Analysis Row (more informative)
-    table.cell(t,0,13,"CVD Analysis", text_color=color.black, bgcolor=color.new(color.white,0))
+    // CVD Analysis Row
+    table.cell(t,0,12,"CVD Analysis", text_color=color.black, bgcolor=color.new(color.white,0))
     cvd_status = not enableCVD ? "Disabled" : cvd_bull_div ? "STRONG Bull" : cvd_bear_div ? "STRONG Bear" : "Normal"
     cvd_color = cvd_bull_div ? color.lime : cvd_bear_div ? color.red : color.gray
-    table.cell(t,1,13,cvd_status, text_color=cvd_color)
+    table.cell(t,1,12,cvd_status, text_color=cvd_color)
 
     // Dynamic Thresholds Row
-    table.cell(t,0,14,"Dynamic Threshold", text_color=color.black, bgcolor=color.new(color.white,0))
+    table.cell(t,0,13,"Dynamic Threshold", text_color=color.black, bgcolor=color.new(color.white,0))
     threshold_status = useDynamicThresholds ? str.tostring(current_threshold_multiplier, "#.##") + "x" : "Static"
     threshold_color = current_threshold_multiplier > 1.3 ? color.red : current_threshold_multiplier < 0.9 ? color.green : color.white
-    table.cell(t,1,14,threshold_status, text_color=threshold_color)
+    table.cell(t,1,13,threshold_status, text_color=threshold_color)
 
     // VIX Regime Enhanced Row
-    table.cell(t,0,15,"VIX Regime Enhanced", text_color=color.black, bgcolor=color.new(color.white,0))
+    table.cell(t,0,14,"VIX Regime Enhanced", text_color=color.black, bgcolor=color.new(color.white,0))
     regime_color = switch vix_ts_regime
-        -2 => color.red     // Crisis
-        -1 => color.orange  // Stress  
-        0 => color.gray     // Normal
-        1 => color.yellow   // Elevated
-        2 => color.purple   // Complacent
+        -2 => color.red
+        -1 => color.orange
+        0 => color.gray
+        1 => color.yellow
+        2 => color.purple
         => color.gray
-    table.cell(t,1,15,vix_risk_regime + " (" + str.tostring(vix_regime_multiplier, "#.##") + "x)", text_color=regime_color)
+    table.cell(t,1,14,vix_risk_regime + " (" + str.tostring(vix_regime_multiplier, "#.##") + "x)", text_color=regime_color)
 
     // Signal Strength Row
-    table.cell(t,0,16,"Signal Strength", text_color=color.black, bgcolor=color.new(color.white,0))
+    table.cell(t,0,15,"Signal Strength", text_color=color.black, bgcolor=color.new(color.white,0))
     current_strength = inLong ? signal_strength_long : inShort ? signal_strength_short : 0.0
     strength_text = current_strength == 0.0 ? "None" : str.tostring(current_strength, "#.##")
     strength_color = current_strength > 1.8 ? color.lime : current_strength > 1.2 ? color.green : current_strength > 0.8 ? color.yellow : color.gray
-    table.cell(t,1,16,strength_text, text_color=strength_color)
-
-    // Band values for debugging REMOVE LATER
-    table.cell(t,0,17,"Band values for debug", text_color=color.black, bgcolor=color.new(color.white,0))
-    band_text1 =  bandMin*sigProj 
-    band_text2 = enhanced_band_threshold*sigProj
-    table.cell(t,1,17, str.tostring(band_text1) + "," + str.tostring(band_text2) + ", " + str.tostring(adaptive_band_threshold) + ", " + str.tostring(vix_regime_multiplier), text_color=color.white)
-
-// REFINED: Much more selective signals, less visual noise, higher quality entries
-// Force scale boundaries (invisible plots)
+    table.cell(t,1,15,strength_text, text_color=strength_color)
